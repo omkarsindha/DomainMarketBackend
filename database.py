@@ -1,39 +1,41 @@
 import psycopg2
-import psycopg2.extras
-import os
+import psycopg2.extras  # Import extras
 from dotenv import load_dotenv
+import os
 
+# Load environment variables from .env
 load_dotenv()
 
-# Get DB credentials from environment variables
-hostname = os.getenv("DB_HOST")
-port = os.getenv("DB_PORT")
-database = os.getenv("DB_NAME")
-user = os.getenv("DB_USER")
-pwd = os.getenv("DB_PASSWORD")
-conn = None
+# Fetch variables
+USER = os.getenv("user")
+PASSWORD = os.getenv("password")
+HOST = os.getenv("host")
+PORT = os.getenv("port")
+DBNAME = os.getenv("dbname")
+
+# Connect to the database
 try:
-  with psycopg2.connect(
-                  host = hostname,
-                  dbname = database,
-                  user = user,
-                  password = pwd,
-                  port = port) as conn:
-  
-   with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+    connection = psycopg2.connect(
+        user=USER,
+        password=PASSWORD,
+        host=HOST,
+        port=PORT,
+        dbname=DBNAME
+    )
+    print("Connection successful!")
 
-    #example of inserting 
-    insert_script = '''INSERT INTO USERS (name, email, password, role) VALUES (%s,%s,%s,%s)'''
-    insert_value = ('Jeeni','abc4@gmail.com','abc@123','buyer')
-    #cur.execute(insert_script,insert_value)
+    # Create a cursor with DictCursor
+    cursor = connection.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
-    #Fetch and print users
-    cur.execute('SELECT * FROM users;')
-    for record in cur.fetchall():
-      print(record['name'],record['role'])
-    
-except Exception as error:
-  print(error)
+    # Fetch and print users
+    cursor.execute('SELECT * FROM users;')
+    for record in cursor.fetchall():
+        print(record['name'], record['role'])  # Now this will work!
+
+except Exception as e:
+    print(f"Failed to connect: {e}")
+
 finally:
-  if conn is not None:
-    conn.close()
+    if connection:
+        cursor.close()
+        connection.close()
