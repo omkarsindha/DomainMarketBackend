@@ -1,17 +1,18 @@
 from fastapi import FastAPI, Query
-from typing import List
+from typing import List, Optional
 import json
-from test_xml_parser import NamecheapService
+from NamecheapService import NamecheapService
 
 app = FastAPI()
-domain_checker = NamecheapService()
+namecheap = NamecheapService()
 
 
 @app.get("/")
 async def root():
     return {"message": "Hello World"}
 
-@app.get("/domains")
+
+@app.get("/domains/check")
 async def check_domains(domains: List[str] = Query(None)):
     """
     Check availability of domains.
@@ -22,18 +23,33 @@ async def check_domains(domains: List[str] = Query(None)):
     Returns:
         JSON response with domain availability information
     """
-    if domains:
-        result = domain_checker.check_domains(domains)
-        return json.loads(result)
+    if not domains:
+        return {"error": "No domains provided"}
+
+    return namecheap.check_domains(domains)
 
 
-@app.get("/hardcoded_domains")
-async def check_hard_domains():
+@app.get("/domains/trending_tlds")
+async def get_trending_tlds():
     """
-    If no domains are provided, it checks hardcoded test domains.\
+    Get trending top-level domains (TLDs).
 
     Returns:
-        JSON response with hard coded domain availability information
+        JSON response with a list of trending TLDs.
     """
-    result = domain_checker.check_hardcoded_domains()
-    return json.loads(result)
+    return namecheap.get_trending_tlds()
+
+
+@app.post("/domains/register")
+async def register_domain(domain: str, years: int = 1):
+    """
+    Register a domain for a user.
+
+    Args:
+        domain: The domain name to register.
+        years: Number of years to register the domain (default: 1).
+
+    Returns:
+        JSON response with registration status.
+    """
+    return namecheap.register_domain(domain, years)
