@@ -85,13 +85,13 @@ class NamecheapService:
                 if tld_name:
                     tlds.append(tld_name)
 
-            pricing_url = self._build_api_url("namecheap.users.getPricing", ProductType="DOMAIN",
-                                              ProductCategory="REGISTER")
-
-            pricing_response = self._make_api_request(pricing_url)
-            print(pricing_response.text)
-            print("Getting pricing information...")
-            pricing_root = ET.fromstring(pricing_response.text)
+            # pricing_url = self._build_api_url("namecheap.users.getPricing", ProductType="DOMAIN",
+            #                                   ProductCategory="REGISTER")
+            #
+            # pricing_response = self._make_api_request(pricing_url)
+            # print(pricing_response.text)
+            # print("Getting pricing information...")
+            # pricing_root = ET.fromstring(pricing_response.text)
 
             # trending_tlds = []
             # for tld in tlds:

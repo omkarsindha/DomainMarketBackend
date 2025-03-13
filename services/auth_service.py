@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 import jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
-from models.user_model import User
+from models.user import User
 from fastapi import HTTPException, Depends
 
 # Secret Key & Algorithm
