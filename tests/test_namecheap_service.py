@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import patch, MagicMock
-from NamecheapService import NamecheapService
+from services.namecheap_service import NamecheapService
 
 
 class TestNamecheapService(unittest.TestCase):

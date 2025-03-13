@@ -63,32 +63,56 @@ class NamecheapService:
         try:
             tld_url = self._build_api_url("namecheap.domains.getTldList")
             tld_response = self._make_api_request(tld_url)
-            # print("This is " + tld_response.text)
+
+            # For debugging - but don't print the whole response in production
+            print("Getting TLD list...")
 
             root = ET.fromstring(tld_response.text)
 
-            # Extract TLD names
-            tlds = [tld.get("Name") for tld in root.findall(".//Tld")]
-            if not tlds:
-                return {"error": "No TLDs found"}
+            # Define the namespace correctly
+            namespace = {"": "http://api.namecheap.com/xml.response"}
 
-            # Fetch pricing information
-            pricing_url = self._build_api_url("namecheap.domains.getPricing")
+            # Extract TLD elements from the Tlds section
+            tld_elements = root.findall(".//Tlds/Tld", namespace)
+
+            if not tld_elements:
+                return {"error": "No TLDs found in the response"}
+
+            # Extract TLD names
+            tlds = []
+            for tld in tld_elements:
+                tld_name = tld.get("Name")
+                if tld_name:
+                    tlds.append(tld_name)
+
+            pricing_url = self._build_api_url("namecheap.users.getPricing", ProductType="DOMAIN",
+                                              ProductCategory="REGISTER")
+
             pricing_response = self._make_api_request(pricing_url)
+            print(pricing_response.text)
+            print("Getting pricing information...")
             pricing_root = ET.fromstring(pricing_response.text)
 
-            # Extract prices for top 10 trending TLDs
-            trending_tlds = []
-            for tld in tlds[:10]:
-                price_element = pricing_root.find(f".//Tld[@Name='{tld}']")
-                if price_element is not None:
-                    price = price_element.get("RegistrationPrice", "N/A")
-                    trending_tlds.append({"tld": tld, "price": price})
+            # trending_tlds = []
+            # for tld in tlds:
+            #     # Updated XPath to match the proper XML structure from the example response
+            #     price_element = pricing_root.find(f".//ProductCategory[@Name='REGISTER']/Product[@Name='{tld}']/Price",
+            #                                       namespace)
+            #
+            #     if price_element is not None:
+            #         # Extract price information from the Price element
+            #         price = price_element.get("Price", "N/A")
+            #         trending_tlds.append({"tld": tld, "price": price})
+            #     else:
+            #         trending_tlds.append({"tld": tld, "price": "N/A"})
 
-            return trending_tlds
+            return tlds
 
+        except ET.ParseError as e:
+            return {"error": f"Failed to parse XML response: {str(e)}"}
         except Exception as e:
-            return {"error": str(e)}
+            return {"error": f"Error fetching TLDs: {str(e)}"}
+
 
     # def register_domain(self, domain, years=1):
     #     """Registers a domain for a user."""
