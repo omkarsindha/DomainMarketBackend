@@ -1,4 +1,4 @@
-# Domain Markets Backedn
+# Domain Markets Backend
 
 This Python application uses the Namecheap API's XML responses to make a RESTful API.
 
