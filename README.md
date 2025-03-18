@@ -1,4 +1,4 @@
-# Domain Markets Backedn
+# Domain Markets Backend
 
 This Python application uses the Namecheap API's XML responses to make a RESTful API.
 
@@ -20,7 +20,7 @@ python -m venv .venv
 ```
 Activate the virtual environment:
 ```sh
-venv\Scripts\activate
+.venv\Scripts\activate
 ```
 
 ### **3) Install Dependencies**
@@ -40,7 +40,12 @@ CLIENT_IP=your_ip_address
 ```
 Contact sindhao@sheridancollege.ca for API information or you can use your own.
 
-### **5) Run the Application**
+### **5) Configure API Credentials**
+This project uses locally installed Postgres for development.  
+Edit the DATABASE_URL  in connection.py according to you test database, username and password.
+
+
+### **6) Run the Application**
 Fast API has no built-in server so run it using the uvicorn server. 
 The following command looks for 'app' instance in 'main.py' file and runs it on server:
 ```sh

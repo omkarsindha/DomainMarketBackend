@@ -1,16 +1,25 @@
 from datetime import datetime, timedelta
 import jwt
+from fastapi.security import OAuth2PasswordBearer
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
-from models.user import User
+from models.db_models import User
 from fastapi import HTTPException, Depends
+from dotenv import load_dotenv
+import os
+import logging
 
-# Secret Key & Algorithm
-SECRET_KEY = "your_secret_key"
+logger = logging.getLogger(__name__)
+
+load_dotenv()
+
+SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
 
-# Password Hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
 
 class AuthService:
     def create_user(self, username: str, password: str, db: Session):
@@ -32,12 +41,14 @@ class AuthService:
         token_data = {"sub": username, "exp": expiration}
         return jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
 
-    def verify_token(self, token: str):
+    def verify_token(self, token: str = Depends(oauth2_scheme)):
+        """Verify the JWT token and return the username."""
         try:
             payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-            username: str = payload.get("sub")
-            if username is None:
-                raise HTTPException(status_code=401, detail="Invalid token")
-            return username
-        except Exception:
-            raise HTTPException(status_code=401, detail="Could not validate credentials")
+            return payload.get("sub")  # Extract the username
+        except jwt.ExpiredSignatureError:
+            logger.warning(f"Authentication failed: Token expired")
+            raise HTTPException(status_code=401, detail="Token expired")
+        except jwt.InvalidTokenError:
+            logger.warning(f"Authentication failed: Invalid token")
+            raise HTTPException(status_code=401, detail="Invalid token")

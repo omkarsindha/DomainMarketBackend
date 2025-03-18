@@ -1,24 +1,28 @@
 from fastapi import APIRouter, Query, Depends
 from typing import List
 from services.namecheap_service import NamecheapService
-#from services.auth_service import verify_token
+from services.auth_service import AuthService  # Import the authentication service
 
 router = APIRouter()
 namecheap = NamecheapService()
+auth_service = AuthService()
 
 @router.get("/check")
-async def check_domains(domains: List[str] = Query(None)):
-    """Check availability of domains."""
-    if not domains:
-        return {"error": "No domains provided"}
-    return namecheap.check_domains(domains)
+def check_domain(domain: str = Query(...), username: str = Depends(auth_service.verify_token)):
+    """Check availability of a single domain."""
+    if not domain:
+        return {"error": "No domain provided"}
+    return namecheap.check_domain_availability(domain)
 
 @router.get("/trending_tlds")
-async def get_trending_tlds():
+def get_trending_tlds(username: str = Depends(auth_service.verify_token)):
     """Get trending TLDs."""
     return namecheap.get_trending_tlds()
 
 @router.post("/register")
-async def register_domain(domain: str, years: int = 1):
+def register_domain(domain: str, years: int = 1, username: str = Depends(auth_service.verify_token)):
     """Register a domain."""
-    return namecheap.register_domain(domain, years)
+    print(domain)
+    print(years)
+    print(username)
+    # return namecheap.register_domain(domain, years)
