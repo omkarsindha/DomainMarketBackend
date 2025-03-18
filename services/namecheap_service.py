@@ -6,10 +6,8 @@ from dotenv import load_dotenv
 
 class NamecheapService:
     def __init__(self):
-        # Load environment variables from .env file
         load_dotenv()
 
-        # Initialize API credentials and settings
         self.api_user = os.getenv("API_USER")
         self.api_key = os.getenv("API_KEY")
         self.username = os.getenv("NAMEOFUSER")
@@ -33,30 +31,106 @@ class NamecheapService:
 
         return response
 
-    def check_domains(self, domains):
-        """Check availability of multiple domains and parse XML response."""
-        if not domains:
-            return {"error": "No domains provided"}
+    def check_domain_availability(self, domain: str):
+        if "." in domain:
+            base_name = domain.split('.')[0]
+            original_domain = domain
+        else:
+            base_name = domain
+            original_domain = f"{domain}.com"
 
-        url = self._build_api_url("namecheap.domains.check", DomainList=",".join(domains))
+        similar_domains = self._generate_similar_domains(base_name)
+        all_domains_to_check = [original_domain] + similar_domains
+
+        domain_results = self._check_domains_in_batches(all_domains_to_check)
+
+        original_result = None
+        suggestions = []
+
+        for domain_name, domain_data in domain_results.items():
+            if domain_data["available"]:
+                regular_price = 10.99
+                sale_price = 8.99
+                sale_percentage = 18
+
+                domain_info = {
+                    "domain": domain_name,
+                    "regular_price": regular_price,
+                    "sale_price": sale_price,
+                    "sale_percentage": sale_percentage
+                }
+
+                if domain_name.lower() == original_domain.lower():
+                    original_result = domain_info
+                else:
+                    suggestions.append(domain_info)
+
+        response = {"suggestions": suggestions}
+        if original_result:
+            response["domain"] = original_result
+
+        return response
+
+    def _check_domains_in_batches(self, domains, batch_size=5):
+        """Check domain availability in batches to improve performance."""
+        results = {}
+
+        # Process domains in batches
+        for i in range(0, len(domains), batch_size):
+            batch = domains[i:i + batch_size]
+
+            batch_results = self._check_domain_batch(batch)
+            results.update(batch_results)
+
+        return results
+
+    def _check_domain_batch(self, domain_batch):
+        """Check availability for a batch of domains."""
+        url = self._build_api_url("namecheap.domains.check", DomainList=",".join(domain_batch))
 
         try:
             response = self._make_api_request(url)
+
             root = ET.fromstring(response.text)
             namespace = {"nc": "http://api.namecheap.com/xml.response"}
-            available_domains = []
 
-            for domain in root.findall(".//nc:DomainCheckResult", namespace):
-                name = domain.get("Domain")
-                available = domain.get("Available") == "true"
-                available_domains.append({"domain": name, "available": available})
+            batch_results = {}
+            for domain_result in root.findall(".//nc:DomainCheckResult", namespace):
+                domain_name = domain_result.get("Domain")
+                available = domain_result.get("Available") == "true"
 
-            return {"domains": available_domains}
+                batch_results[domain_name] = {
+                    "available": available
+                }
 
-        except ET.ParseError:
-            return {"error": "Failed to parse XML response", "raw_response": response.text}
+            return batch_results
+
+        except ET.ParseError as e:
+            print(f"[ERROR] Failed to parse XML response: {e}")
+            # Return domains as unavailable in case of parse error
+            return {domain: {"available": False} for domain in domain_batch}
         except Exception as e:
-            return {"error": str(e)}
+            print(f"[ERROR] Exception for batch: {e}")
+            # Return domains as unavailable in case of error
+            return {domain: {"available": False} for domain in domain_batch}
+
+    def _generate_similar_domains(self, base_name):
+        """Generate similar domain suggestions based on the base name."""
+        tlds = ['com', 'net', 'org', 'io', 'co', 'app', 'dev', 'ai', 'xyz', 'tech']
+
+        prefixes = ['my', 'get', 'the', 'try']
+        suffixes = ['app', 'hub', 'pro', 'site', 'web', 'online']
+
+        suggestions = []
+
+        for tld in tlds:
+            suggestions.append(f"{base_name}.{tld}")
+        for prefix in prefixes:
+            suggestions.append(f"{prefix}{base_name}.com")
+        for suffix in suffixes:
+            suggestions.append(f"{base_name}{suffix}.com")
+
+        return list(set(suggestions))
 
     def get_trending_tlds(self):
         """Fetches trending TLDs and their pricing."""
@@ -64,34 +138,29 @@ class NamecheapService:
             tld_url = self._build_api_url("namecheap.domains.getTldList")
             tld_response = self._make_api_request(tld_url)
 
-            # For debugging - but don't print the whole response in production
             print("Getting TLD list...")
 
             root = ET.fromstring(tld_response.text)
-
-            # Define the namespace correctly
             namespace = {"": "http://api.namecheap.com/xml.response"}
 
-            # Extract TLD elements from the Tlds section
             tld_elements = root.findall(".//Tlds/Tld", namespace)
 
             if not tld_elements:
                 return {"error": "No TLDs found in the response"}
 
-            # Extract TLD names
             tlds = []
             for tld in tld_elements:
                 tld_name = tld.get("Name")
                 if tld_name:
                     tlds.append(tld_name)
 
-            pricing_url = self._build_api_url("namecheap.users.getPricing", ProductType="DOMAIN",
-                                              ProductCategory="REGISTER")
-
-            pricing_response = self._make_api_request(pricing_url)
-            print(pricing_response.text)
-            print("Getting pricing information...")
-            pricing_root = ET.fromstring(pricing_response.text)
+            # pricing_url = self._build_api_url("namecheap.users.getPricing", ProductType="DOMAIN",
+            #                                   ProductCategory="REGISTER")
+            #
+            # pricing_response = self._make_api_request(pricing_url)
+            # print(pricing_response.text)
+            # print("Getting pricing information...")
+            # pricing_root = ET.fromstring(pricing_response.text)
 
             # trending_tlds = []
             # for tld in tlds:
@@ -135,11 +204,11 @@ class NamecheapService:
 if __name__ == "__main__":
     domain_checker = NamecheapService()
 
-    print("Checking DOmain availability...")
-    print(domain_checker.check_domains(["google.com", "example.com", "test123.ca"]))
+    print("Checking Domain availability...")
+    print(domain_checker.check_domain_availability("omkar.com"))
 
-    print("Fetching trending TLDs...")
-    print(domain_checker.get_trending_tlds())
+    # print("Fetching trending TLDs...")
+    # print(domain_checker.get_trending_tlds())
     #
     # print("Registering a test domain...")
     # print(domain_checker.register_domain("exampletestdomain123.com"))

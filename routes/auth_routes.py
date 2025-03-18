@@ -1,16 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
 from services.auth_service import AuthService
 from database.connection import get_db
+from models.api_dto import RegisterRequest
+
 
 router = APIRouter()
 auth_service = AuthService()
-
-# Define Pydantic Model for User Registration
-class RegisterRequest(BaseModel):
-    username: str
-    password: str
 
 @router.post("/register/")
 def register(request: RegisterRequest, db: Session = Depends(get_db)):
