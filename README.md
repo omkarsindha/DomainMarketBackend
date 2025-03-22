@@ -44,12 +44,20 @@ Contact sindhao@sheridancollege.ca for API information or you can use your own.
 This project uses locally installed Postgres for development.  
 Edit the DATABASE_URL  in connection.py according to you test database, username and password.
 
-
-### **6) Run the Application**
-Fast API has no built-in server so run it using the uvicorn server. 
-The following command looks for 'app' instance in 'main.py' file and runs it on server:
+### **6) Setup a secret key**
+Generate a secret key using the following command:
 ```sh
-uvicorn main:app --reload
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+Add the generated key into the .env file as:
+```sh
+SECRET_KEY=generatedkey
+```
+
+### **7) Run the Application**
+Run the application using 
+```sh
+python main.py
 ```
 
 
