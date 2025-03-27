@@ -3,7 +3,7 @@ import jwt
 from fastapi.security import OAuth2PasswordBearer
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
-from models.db_models import User
+from models.db_models import User, UserDetails
 from fastapi import HTTPException, Depends
 from dotenv import load_dotenv
 import os
@@ -15,19 +15,21 @@ load_dotenv()
 
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
-
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 
 class AuthService:
-    def create_user(self, username: str, email, password: str, db: Session):
+    def create_user(self, username: str, email: str, password: str, db: Session):
         hashed_password = pwd_context.hash(password)
-        user = User(username=username, email=email, password_hash=hashed_password)
+        user = User(username=username, password_hash=hashed_password)
         db.add(user)
         db.commit()
         db.refresh(user)
+
+        user_details = UserDetails(user_id=user.id, email=email)
+        db.add(user_details)
+        db.commit()
         return user
 
     def authenticate_user(self, username: str, password: str, db: Session):
