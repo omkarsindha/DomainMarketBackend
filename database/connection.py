@@ -9,8 +9,11 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
 def get_db():
+    from models.db_models import User, UserDetails, Domains
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
+Base.metadata.create_all(bind=engine)

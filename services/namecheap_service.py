@@ -2,7 +2,9 @@ import os
 import requests
 import xml.etree.ElementTree as ET
 from dotenv import load_dotenv
+from services.database_service import DatabaseService
 
+database_service = DatabaseService()
 
 class NamecheapService:
     def __init__(self):
@@ -154,27 +156,6 @@ class NamecheapService:
                 if tld_name:
                     tlds.append(tld_name)
 
-            # pricing_url = self._build_api_url("namecheap.users.getPricing", ProductType="DOMAIN",
-            #                                   ProductCategory="REGISTER")
-            #
-            # pricing_response = self._make_api_request(pricing_url)
-            # print(pricing_response.text)
-            # print("Getting pricing information...")
-            # pricing_root = ET.fromstring(pricing_response.text)
-
-            # trending_tlds = []
-            # for tld in tlds:
-            #     # Updated XPath to match the proper XML structure from the example response
-            #     price_element = pricing_root.find(f".//ProductCategory[@Name='REGISTER']/Product[@Name='{tld}']/Price",
-            #                                       namespace)
-            #
-            #     if price_element is not None:
-            #         # Extract price information from the Price element
-            #         price = price_element.get("Price", "N/A")
-            #         trending_tlds.append({"tld": tld, "price": price})
-            #     else:
-            #         trending_tlds.append({"tld": tld, "price": "N/A"})
-
             return tlds
 
         except ET.ParseError as e:
@@ -182,23 +163,40 @@ class NamecheapService:
         except Exception as e:
             return {"error": f"Error fetching TLDs: {str(e)}"}
 
+    def register_domain(self, domain: str, years: int, username, db):
+        """
+        Registers a domain using Namecheap API with only Registrant info.
+        """
+        user_details = database_service.get_user_details(username, db)
+        params = {}
+        for contact_type in ['Admin', 'Tech', 'AuxBilling', 'Registrant']:
+            params[f'{contact_type}FirstName'] = user_details.first_name
+            params[f'{contact_type}LastName'] = user_details.last_name
+            params[f'{contact_type}Address1'] = user_details.address
+            params[f'{contact_type}City'] = user_details.city
+            params[f'{contact_type}StateProvince'] = user_details.state
+            params[f'{contact_type}PostalCode'] = user_details.zip_code
+            params[f'{contact_type}Country'] = user_details.country
+            params[f'{contact_type}Phone'] = user_details.phone_number
+            params[f'{contact_type}EmailAddress'] = user_details.email
+        params["AddFreeWhoisguard"] = "yes"
+        params["WGEnabled"] = "yes"
+        params["DomainName"] = domain
+        params["Years"] = years
+        url = self._build_api_url("namecheap.domains.create", **params)
+        try:
+            response = self._make_api_request(url)
+            root = ET.fromstring(response.text)
 
-    # def register_domain(self, domain, years=1):
-    #     """Registers a domain for a user."""
-    #     url = self._build_api_url("namecheap.domains.create", DomainName=domain, Years=years)
-    #
-    #     try:
-    #         response = self._make_api_request(url)
-    #         root = ET.fromstring(response.text)
-    #         namespace = {"nc": "http://api.namecheap.com/xml.response"}
-    #
-    #         success = root.find(".//nc:DomainCreateResult", namespace)
-    #         if success is not None and success.get("Registered") == "true":
-    #             return {"domain": domain, "status": "Registered successfully"}
-    #         else:
-    #             return {"domain": domain, "status": "Registration failed", "raw_response": response.text}
-    #     except Exception as e:
-    #         return {"error": str(e)}
+            # Check for API errors
+            if root.find(".//Errors/Error") is not None:
+                error_msg = root.find(".//Errors/Error").text
+                return {"error": error_msg}
+
+            return {"success": True, "message": "Domain registered successfully", "raw_response": response.text}
+
+        except Exception as e:
+            return {"error": str(e)}
 
 
 if __name__ == "__main__":
