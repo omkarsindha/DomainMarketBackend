@@ -12,13 +12,17 @@ namecheap = NamecheapService()
 database_service = DatabaseService()
 auth_service = AuthService()
 
+
 @router.get("/user_details")
 def get_user_details(username: str = Depends(auth_service.verify_token), db: Session = Depends(get_db)):
     """Check availability of additional details in user_details model."""
-
     details = database_service.get_user_details(username, db)
     return details
 
+
 @router.post("/user_details")
-def post_user_details(user_details: DomainRegisterUserDetails, username: str = Depends(auth_service.verify_token)):
-    """Additional details before registering for a domain."""
+def post_user_details(user_details: DomainRegisterUserDetails, username: str = Depends(auth_service.verify_token),
+        db: Session = Depends(get_db)):
+    """Save or update additional user details."""
+    saved_details = database_service.create_or_update_user_details(username, user_details, db)
+    return {"message": "User details saved successfully", "details": saved_details}
