@@ -162,6 +162,41 @@ class NamecheapService:
             return {"error": f"Failed to parse XML response: {str(e)}"}
         except Exception as e:
             return {"error": f"Error fetching TLDs: {str(e)}"}
+   
+    def get_trending_keywords(self):
+        """
+        Returns a list of trending keywords for domain names. This list can later be enhanced by fetching from external source
+        """
+        trending_keywords = [
+            "ai","crypto","blockchain","startup","web3","nft","quantum","cybersecurity","greenenerygy","automation"
+        ]
+        return trending_keywords
+    
+    def get_trending_available_domains(self):
+        """
+        Finds trending available domains by checking domain availability for trending keywords.
+        """
+        trending_keywords = self.get_trending_keywords()
+        available_domains = []
+
+        for keyword in trending_keywords:
+            domain_names = self._generate_similar_domains(keyword)
+            for domain_name in domain_names:
+                check_result = self.check_domain_availability(domain_name)
+
+                if "domain" in check_result:  # Means it's available
+                    available_domains.append({
+                    "domain": check_result["domain"]["domain"],
+                    "sale_price": check_result["domain"]["sale_price"],
+                    "regular_price": check_result["domain"]["regular_price"]
+                })
+
+            # Stop if we have 5 trending domains
+                if len(available_domains) >= 5:
+                    break
+
+        return available_domains
+
 
     def register_domain(self, domain: str, years: int, username, db):
         """

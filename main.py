@@ -1,5 +1,6 @@
 import uvicorn
 from fastapi import FastAPI
+from services.namecheap_service import NamecheapService
 from routes.domain_routes import router as domain_router
 from routes.auth_routes import router as auth_router
 from routes.user_routes import router as user_router
@@ -22,6 +23,9 @@ app.include_router(user_router, prefix="/users", tags=["users"])
 
 @app.get("/")
 async def root():
+    namecheap_service = NamecheapService()
+    print("hello")
+    print(namecheap_service.get_trending_available_domains())
     return {"message": "Hello World"}
 
 if __name__ == "__main__":
