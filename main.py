@@ -23,9 +23,6 @@ app.include_router(user_router, prefix="/users", tags=["users"])
 
 @app.get("/")
 async def root():
-    namecheap_service = NamecheapService()
-    print("hello")
-    print(namecheap_service.get_trending_available_domains())
     return {"message": "Hello World"}
 
 if __name__ == "__main__":

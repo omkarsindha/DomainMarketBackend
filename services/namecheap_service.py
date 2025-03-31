@@ -3,6 +3,8 @@ import requests
 import xml.etree.ElementTree as ET
 from dotenv import load_dotenv
 from services.database_service import DatabaseService
+import utils.utils as utils
+
 
 database_service = DatabaseService()
 
@@ -233,12 +235,48 @@ class NamecheapService:
         except Exception as e:
             return {"error": str(e)}
 
+    def get_tld_price(self, tld):
+        """Fetches the registration price of a given TLD"""
+        url = self._build_api_url(
+            "namecheap.users.getPricing",
+            ProductType="DOMAIN",
+            ProductCategory="REGISTER",
+            ProductName=tld.upper()
+        )
+
+        try:
+            response = self._make_api_request(url)
+            print(response.text)
+            ns = {'ns': 'http://api.namecheap.com/xml.response'}  # Namespace dictionary
+            root = ET.fromstring(response.text)
+
+            price_element = root.find(
+                ".//ns:ProductCategory[@Name='register']/ns:Product[@Name='com']/ns:Price[@Duration='1'][@DurationType='YEAR']",
+                ns)
+
+            if price_element is not None:
+                price_str = price_element.get("Price")
+                if price_str is not None:
+                    try:
+                        price = float(price_str)  # Convert price from string to float
+                        return utils.convert_usd_to_cad(price)
+                    except ValueError:
+                        return {"error": f"Invalid price format : {price_str}"}
+                return {"error": f"Price attribute missing for {tld}"}
+
+            return {"error": f"Price not found for {tld}"}
+
+        except ET.ParseError as e:
+            return {"error": f"Failed to parse XML response: {str(e)}"}
+        except Exception as e:
+            return {"error": str(e)}
+
 
 if __name__ == "__main__":
     domain_checker = NamecheapService()
-
-    print("Checking Domain availability...")
-    print(domain_checker.check_domain_availability("omkar.com"))
+    print(domain_checker.get_tld_price("com"))
+    # print("Checking Domain availability...")
+    # print(domain_checker.check_domain_availability("omkar.com"))
 
     # print("Fetching trending TLDs...")
     # print(domain_checker.get_trending_tlds())
