@@ -19,7 +19,6 @@ def get_user_details(username: str = Depends(auth_service.verify_token), db: Ses
     details = database_service.get_user_details(username, db)
     return details
 
-
 @router.post("/user_details")
 def post_user_details(user_details: DomainRegisterUserDetails, username: str = Depends(auth_service.verify_token),
         db: Session = Depends(get_db)):
