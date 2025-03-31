@@ -10,13 +10,13 @@ router = APIRouter()
 auth_service = AuthService()
 
 
-@router.post("/register/")
+@router.post("/register")
 def register(request: RegisterRequest, db: Session = Depends(get_db)):
     user = auth_service.create_user(request.username, request.email, request.password, db)
     return {"message": "User registered successfully", "user": user.username}
 
 
-@router.post("/login/")
+@router.post("/login")
 def login(request: LoginRequest, db: Session = Depends(get_db)):
     user = auth_service.authenticate_user(request.username, request.password, db)
     if not user:

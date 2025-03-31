@@ -18,7 +18,7 @@ def check_domain(domain: str = Query(...), username: str = Depends(auth_service.
 
 @router.get("/trending_domains")
 def trending_domains(username: str = Depends(auth_service.verify_token)):
-    """"Gets the trending domains"""
+    """Gets the trending domains"""
     return namecheap.get_trending_available_domains()
 
 @router.get("/trending_tlds")

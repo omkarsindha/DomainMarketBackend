@@ -2,11 +2,12 @@ import os
 import requests
 import xml.etree.ElementTree as ET
 from dotenv import load_dotenv
+import concurrent.futures
 from services.database_service import DatabaseService
 import utils.utils as utils
 
-
 database_service = DatabaseService()
+
 
 class NamecheapService:
     def __init__(self):
@@ -17,6 +18,7 @@ class NamecheapService:
         self.username = os.getenv("NAMEOFUSER")
         self.client_ip = os.getenv("CLIENT_IP")
         self.api_url = "https://api.sandbox.namecheap.com/xml.response"
+        self.tld_price_cache = {}  # Cache for TLD prices
 
     def _build_api_url(self, command, **params):
         """Builds a Namecheap API request URL with common parameters."""
@@ -43,25 +45,67 @@ class NamecheapService:
             base_name = domain
             original_domain = f"{domain}.com"
 
-        similar_domains = self._generate_similar_domains(base_name)
+        similar_domains = utils.generate_similar_domains(base_name)
         all_domains_to_check = [original_domain] + similar_domains
 
-        domain_results = self._check_domains_in_batches(all_domains_to_check)
+        batch_size = 5
+        domain_results = {}
+        tlds_to_check = set()
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            # Split domains into batches
+            batches = [all_domains_to_check[i:i + batch_size]
+                       for i in range(0, len(all_domains_to_check), batch_size)]
+            future_to_batch = {executor.submit(self._check_domain_batch, batch): batch
+                               for batch in batches}
+
+            for future in concurrent.futures.as_completed(future_to_batch):
+                batch_results = future.result()
+                domain_results.update(batch_results)
+
+                for domain_name in batch_results:
+                    tld = domain_name.split(".")[-1]
+                    tlds_to_check.add(tld)
+
+        tlds_needing_price = [tld for tld in tlds_to_check if tld not in self.tld_price_cache]
+        if tlds_needing_price:
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future_to_tld = {executor.submit(self.get_tld_price, tld): tld
+                                 for tld in tlds_needing_price}
+
+                for future in concurrent.futures.as_completed(future_to_tld):
+                    tld = future_to_tld[future]
+                    try:
+                        result = future.result()
+                        if not isinstance(result, dict) or "error" not in result:  # If not an error dict
+                            # Assuming get_tld_price now returns a dict with price and duration
+                            self.tld_price_cache[tld] = result
+                    except Exception as e:
+                        print(f"Error fetching price for TLD {tld}: {e}")
+
+        for domain_name, domain_data in domain_results.items():
+            if not domain_data["is_premium"]:
+                tld = domain_name.split(".")[-1]
+                if tld in self.tld_price_cache:
+                    price_info = self.tld_price_cache[tld]
+                    if isinstance(price_info, dict):
+                        # If price cache now stores a dict with price and duration
+                        domain_data["price"] = price_info["price"]
+                        domain_data["min_duration"] = price_info["min_duration"]
+                    else:
+                        # Backward compatibility if price cache still has just the price
+                        domain_data["price"] = price_info
+                        domain_data["min_duration"] = 1  # Default duration
 
         original_result = None
         suggestions = []
 
         for domain_name, domain_data in domain_results.items():
             if domain_data["available"]:
-                regular_price = 10.99
-                sale_price = 8.99
-                sale_percentage = 18
-
                 domain_info = {
                     "domain": domain_name,
-                    "regular_price": regular_price,
-                    "sale_price": sale_price,
-                    "sale_percentage": sale_percentage
+                    "price": domain_data.get("price"),
+                    "min_duration": domain_data.get("min_duration", 1)  # Default to 1 if not found
                 }
 
                 if domain_name.lower() == original_domain.lower():
@@ -75,26 +119,13 @@ class NamecheapService:
 
         return response
 
-    def _check_domains_in_batches(self, domains, batch_size=5):
-        """Check domain availability in batches to improve performance."""
-        results = {}
-
-        # Process domains in batches
-        for i in range(0, len(domains), batch_size):
-            batch = domains[i:i + batch_size]
-
-            batch_results = self._check_domain_batch(batch)
-            results.update(batch_results)
-
-        return results
-
     def _check_domain_batch(self, domain_batch):
-        """Check availability for a batch of domains."""
+        """Check availability for a batch of domains, including premium details."""
         url = self._build_api_url("namecheap.domains.check", DomainList=",".join(domain_batch))
 
         try:
             response = self._make_api_request(url)
-
+            print(response.text)  # Debugging line, can be removed
             root = ET.fromstring(response.text)
             namespace = {"nc": "http://api.namecheap.com/xml.response"}
 
@@ -102,39 +133,23 @@ class NamecheapService:
             for domain_result in root.findall(".//nc:DomainCheckResult", namespace):
                 domain_name = domain_result.get("Domain")
                 available = domain_result.get("Available") == "true"
+                is_premium = domain_result.get("IsPremiumName") == "true"
+
+                if is_premium:
+                    premium_price = float(domain_result.get("PremiumRegistrationPrice", 0))
+                else:
+                    premium_price = 0
 
                 batch_results[domain_name] = {
-                    "available": available
+                    "available": available,
+                    "is_premium": is_premium,
+                    "price": premium_price
                 }
 
             return batch_results
-
-        except ET.ParseError as e:
-            print(f"[ERROR] Failed to parse XML response: {e}")
-            # Return domains as unavailable in case of parse error
-            return {domain: {"available": False} for domain in domain_batch}
         except Exception as e:
-            print(f"[ERROR] Exception for batch: {e}")
-            # Return domains as unavailable in case of error
-            return {domain: {"available": False} for domain in domain_batch}
-
-    def _generate_similar_domains(self, base_name):
-        """Generate similar domain suggestions based on the base name."""
-        tlds = ['com', 'net', 'org', 'io', 'co', 'app', 'dev', 'ai', 'xyz', 'tech']
-
-        prefixes = ['my', 'get', 'the', 'try']
-        suffixes = ['app', 'hub', 'pro', 'site', 'web', 'online']
-
-        suggestions = []
-
-        for tld in tlds:
-            suggestions.append(f"{base_name}.{tld}")
-        for prefix in prefixes:
-            suggestions.append(f"{prefix}{base_name}.com")
-        for suffix in suffixes:
-            suggestions.append(f"{base_name}{suffix}.com")
-
-        return list(set(suggestions))
+            print(f"Error checking domain batch: {e}")
+            return {}
 
     def get_trending_tlds(self):
         """Fetches trending TLDs and their pricing."""
@@ -164,16 +179,17 @@ class NamecheapService:
             return {"error": f"Failed to parse XML response: {str(e)}"}
         except Exception as e:
             return {"error": f"Error fetching TLDs: {str(e)}"}
-   
+
     def get_trending_keywords(self):
         """
         Returns a list of trending keywords for domain names. This list can later be enhanced by fetching from external source
         """
         trending_keywords = [
-            "ai","crypto","blockchain","startup","web3","nft","quantum","cybersecurity","greenenerygy","automation"
+            "ai", "crypto", "blockchain", "startup", "web3", "nft", "quantum", "cybersecurity", "greenenerygy",
+            "automation"
         ]
         return trending_keywords
-    
+
     def get_trending_available_domains(self):
         """
         Finds trending available domains by checking domain availability for trending keywords.
@@ -188,17 +204,16 @@ class NamecheapService:
 
                 if "domain" in check_result:  # Means it's available
                     available_domains.append({
-                    "domain": check_result["domain"]["domain"],
-                    "sale_price": check_result["domain"]["sale_price"],
-                    "regular_price": check_result["domain"]["regular_price"]
-                })
+                        "domain": check_result["domain"]["domain"],
+                        "sale_price": check_result["domain"]["sale_price"],
+                        "regular_price": check_result["domain"]["regular_price"]
+                    })
 
-            # Stop if we have 5 trending domains
+                # Stop if we have 5 trending domains
                 if len(available_domains) >= 5:
                     break
 
         return available_domains
-
 
     def register_domain(self, domain: str, years: int, username, db):
         """
@@ -236,7 +251,11 @@ class NamecheapService:
             return {"error": str(e)}
 
     def get_tld_price(self, tld):
-        """Fetches the registration price of a given TLD"""
+        """Fetches the registration price and minimum duration of a given TLD"""
+        # Return cached info if available
+        if tld in self.tld_price_cache:
+            return self.tld_price_cache[tld]
+
         url = self._build_api_url(
             "namecheap.users.getPricing",
             ProductType="DOMAIN",
@@ -246,25 +265,46 @@ class NamecheapService:
 
         try:
             response = self._make_api_request(url)
-            print(response.text)
             ns = {'ns': 'http://api.namecheap.com/xml.response'}  # Namespace dictionary
             root = ET.fromstring(response.text)
 
-            price_element = root.find(
-                ".//ns:ProductCategory[@Name='register']/ns:Product[@Name='com']/ns:Price[@Duration='1'][@DurationType='YEAR']",
-                ns)
+            product_element = root.find(
+                ".//ns:ProductCategory[@Name='register']/ns:Product[@Name='{0}']".format(tld.lower()),
+                namespaces=ns)
 
-            if price_element is not None:
-                price_str = price_element.get("Price")
-                if price_str is not None:
-                    try:
-                        price = float(price_str)  # Convert price from string to float
-                        return utils.convert_usd_to_cad(price)
-                    except ValueError:
-                        return {"error": f"Invalid price format : {price_str}"}
-                return {"error": f"Price attribute missing for {tld}"}
+            if product_element is not None:
+                # Find the price element with the minimum duration
+                price_elements = product_element.findall("ns:Price", namespaces=ns)
+                if price_elements:
+                    # Sort by Duration to find the minimum available
+                    price_elements.sort(key=lambda x: int(x.get("Duration", "0")))
+                    price_element = price_elements[0]  # Get the one with the lowest duration
 
-            return {"error": f"Price not found for {tld}"}
+                    price_str = price_element.get("Price")
+                    duration_str = price_element.get("Duration")
+
+                    if price_str is not None and duration_str is not None:
+                        try:
+                            price = float(price_str)
+                            duration = int(duration_str)
+                            converted_price = utils.convert_usd_to_cad(price)
+
+                            # Store both price and duration in the cache
+                            result = {
+                                "price": converted_price,
+                                "min_duration": duration,
+                                "duration_type": price_element.get("DurationType", "YEAR")
+                            }
+
+                            self.tld_price_cache[tld] = result  # Cache the result
+                            return result
+                        except ValueError:
+                            return {"error": f"Invalid format for price or duration: {price_str}, {duration_str}"}
+                    return {"error": f"Price or duration attribute missing for {tld}"}
+                else:
+                    return {"error": f"No price elements found for {tld}"}
+            else:
+                return {"error": f"Product not found for {tld}"}
 
         except ET.ParseError as e:
             return {"error": f"Failed to parse XML response: {str(e)}"}
@@ -274,9 +314,8 @@ class NamecheapService:
 
 if __name__ == "__main__":
     domain_checker = NamecheapService()
-    print(domain_checker.get_tld_price("com"))
-    # print("Checking Domain availability...")
-    # print(domain_checker.check_domain_availability("omkar.com"))
+    #print(domain_checker.get_tld_price("ai"))
+    print(domain_checker.check_domain_availability("omkar.com"))
 
     # print("Fetching trending TLDs...")
     # print(domain_checker.get_trending_tlds())

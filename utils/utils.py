@@ -20,6 +20,23 @@ def convert_usd_to_cad(usd_amount):
         print(f"Network error: {e}")
         return None
 
+def generate_similar_domains(base_name):
+    """Generate similar domain suggestions based on the base name."""
+    tlds = ['com', 'net', 'org', 'io', 'co', 'app', 'dev', 'ai', 'xyz', 'tech']
+
+    prefixes = ['my', 'get', 'the', 'try']
+    suffixes = ['app', 'hub', 'pro', 'site', 'web', 'online']
+
+    suggestions = []
+
+    for tld in tlds:
+        suggestions.append(f"{base_name}.{tld}")
+    for prefix in prefixes:
+        suggestions.append(f"{prefix}{base_name}.com")
+    for suffix in suffixes:
+        suggestions.append(f"{base_name}{suffix}.com")
+
+    return list(set(suggestions))
 
 if __name__ == "__main__":
     usd_value = 100
