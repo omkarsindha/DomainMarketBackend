@@ -16,6 +16,11 @@ def check_domain(domain: str = Query(...), username: str = Depends(auth_service.
         return {"error": "No domain provided"}
     return namecheap.check_domain_availability(domain)
 
+@router.get("/trending_domains")
+def trending_domains(username: str = Depends(auth_service.verify_token)):
+    """"Gets the trending domains"""
+    return namecheap.get_trending_available_domains()
+
 @router.get("/trending_tlds")
 def get_trending_tlds(username: str = Depends(auth_service.verify_token)):
     """Get trending TLDs."""
