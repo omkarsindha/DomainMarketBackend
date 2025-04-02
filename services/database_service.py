@@ -1,4 +1,6 @@
 from sqlalchemy.orm import Session
+
+from database.connection import get_db
 from models.db_models import User, UserDetails
 from models.api_dto import DomainRegisterUserDetails
 
