@@ -49,6 +49,7 @@ class PaymentService:
                 currency=currency,
                 payment_method=payment_method_id,
                 confirm=True,  # Automatically confirm payment
+                return_url="http://localhost:8000/" #Change from front end
             )
             return {"status": intent.status, "client_secret": intent.client_secret}
         except stripe.error.StripeError as e:
