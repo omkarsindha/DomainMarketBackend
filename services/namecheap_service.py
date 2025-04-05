@@ -3,6 +3,9 @@ import requests
 import xml.etree.ElementTree as ET
 from dotenv import load_dotenv
 import concurrent.futures
+
+from sqlalchemy import make_url
+
 from services.database_service import DatabaseService
 import utils.utils as utils
 
@@ -185,7 +188,7 @@ class NamecheapService:
         Returns a list of trending keywords for domain names. This list can later be enhanced by fetching from external source
         """
         trending_keywords = [
-            "ai", "crypto", "blockchain", "startup", "web3", "nft", "quantum", "cybersecurity", "greenenerygy",
+            "ai", "crypto", "blockchain", "startup", "web3", "nft", "quantum", "cybersecurity", "greenery",
             "automation"
         ]
         return trending_keywords
@@ -196,22 +199,14 @@ class NamecheapService:
         """
         trending_keywords = self.get_trending_keywords()
         available_domains = []
-
         for keyword in trending_keywords:
-            domain_names = self._generate_similar_domains(keyword)
-            for domain_name in domain_names:
-                check_result = self.check_domain_availability(domain_name)
-
-                if "domain" in check_result:  # Means it's available
-                    available_domains.append({
-                        "domain": check_result["domain"]["domain"],
-                        "sale_price": check_result["domain"]["sale_price"],
-                        "regular_price": check_result["domain"]["regular_price"]
-                    })
-
-                # Stop if we have 5 trending domains
-                if len(available_domains) >= 5:
-                    break
+            domain_name = f"{keyword}.com"
+            url_availability = self._build_api_url("namecheap.domains.check", DomainList=domain_name)
+            response_availability = self._make_api_request(url_availability)
+            print(response_availability.text)
+            if response_availability.status_code == 200 and "Available" in response_availability.text:
+                domain_price = self.get_tld_price("com")
+                available_domains.append({"domain": domain_name, "price": domain_price})
 
         return available_domains
 
@@ -315,8 +310,8 @@ class NamecheapService:
 if __name__ == "__main__":
     domain_checker = NamecheapService()
     #print(domain_checker.get_tld_price("ai"))
-    print(domain_checker.check_domain_availability("omkar.com"))
-
+    #print(domain_checker.check_domain_availability("omkar.com"))
+    print(domain_checker.get_trending_available_domains())
     # print("Fetching trending TLDs...")
     # print(domain_checker.get_trending_tlds())
     #

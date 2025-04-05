@@ -26,3 +26,10 @@ class RegisterRequest(BaseModel):
 
 class DomainsCheckRequest(BaseModel):
     domain: str
+
+class PaymentRequest(BaseModel):
+    domain: str
+    card_number: str
+    exp_month: int
+    exp_year: int
+    cvc: str
