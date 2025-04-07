@@ -32,11 +32,17 @@ def get_trending_tlds(username: str = Depends(auth_service.verify_token)):
     """Get trending TLDs."""
     return namecheap.get_trending_tlds()
 
-@router.get("/pay")
-def make_payement_for_domain(domain: str = Query(...), username: str = Depends(auth_service.verify_token)):
-    if not domain:
-        return {"error": "No domain provided"}
-    return payment.payment_for_domain(domain)
+@router.post("/purchase-domain")
+def purchase_domain(
+    payment_details: PaymentRequest,
+    username: str = Depends(auth_service.verify_token),
+    db: Session = Depends(get_db),
+):
+    domain = payment_details.domain
+    years = payment_details.years
+    payment_token = payment_details.payment_token
+    return payment.purchase_domain(domain, years, payment_token, username, db)
+
 
 @router.post("/register")
 def register_domain(domain: str = Query(...),years: int = Query(...),

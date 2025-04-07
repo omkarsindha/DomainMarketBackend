@@ -1,55 +1,62 @@
 import os
-import stripe
+
 import dotenv
+from fastapi import HTTPException
+from sqlalchemy.orm import Session
+import stripe
 from services.namecheap_service import NamecheapService
 
-dotenv.load_dotenv()
-stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
 
 class PaymentService:
     def __init__(self):
+        dotenv.load_dotenv()
+        stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
         self.namecheap = NamecheapService()
 
-    def payment_for_domain(self, domain: str):
-        """Process payment for a domain by receiving only the domain name."""
-        domain_tld = domain.split('.')[-1]  # Extract TLD
-        domain_price = self.namecheap.get_tld_price(domain_tld).get('price', 0)
+    def purchase_domain(self, domain: str, years: int, payment_token: str, username: str, db: Session):
+        """
+        Pay for a domain and register it if payment succeeds.
+        """
+        # Step 1: Get domain price
+        domain_tld = domain.split('.')[-1]
+        domain_price_whole = self.namecheap.get_tld_price(domain_tld)
+        domain_price =domain_price_whole.get("price", 0)
+        print(domain_price_whole)
 
         if domain_price <= 0:
             return {"error": "Invalid domain price"}
 
-        amount_in_cents = int(domain_price * 100)  # Convert to cents
+        total_price = domain_price * years
+        amount_in_cents = int(total_price * 100)
 
-        # Use the test token for the payment method
-        payment_method = self.create_payment_method()  # Using test token
-        if "error" in payment_method:
-            return payment_method  # Return error if card creation fails
+        # Step 2: Create and confirm payment
+        payment_response = self.create_and_confirm_payment(
+            amount=amount_in_cents,
+            payment_method_id=payment_token
+        )
 
-        # Create and confirm payment intent using the payment method
-        return self.create_and_confirm_payment(amount_in_cents, payment_method["id"])
+        if "error" in payment_response:
+            return {"error": f"Payment failed: {payment_response['error']}"}
 
-    def create_payment_method(self):
-        """Use Stripe's predefined test token (tok_visa) for testing."""
-        try:
-            # Use the test token 'tok_visa' for testing purposes
-            payment_method = stripe.PaymentMethod.create(
-                type="card",
-                card={"token": "tok_visa"}  # Token for testing purposes
-            )
-            print("Created Payment Method ID:", payment_method.id)  # Print to console
-            return {"id": payment_method.id}
-        except stripe.error.StripeError as e:
-            return {"error": str(e)}
+        if payment_response.get("status") != "succeeded":
+            return {"error": "Payment not successful"}
+
+        # Step 3: Register domain after successful payment
+        registration_result = self.namecheap.register_domain(domain, years, username, db)
+
+        return {
+            "payment_status": payment_response.get("status"),
+            "registration_result": registration_result
+        }
 
     def create_and_confirm_payment(self, amount: int, payment_method_id: str, currency: str = "cad"):
-        """Create and confirm a payment intent using a payment method."""
         try:
             intent = stripe.PaymentIntent.create(
                 amount=amount,
                 currency=currency,
                 payment_method=payment_method_id,
-                confirm=True,  # Automatically confirm payment
-                return_url="http://localhost:8000/" #Change from front end
+                confirm=True,
+                return_url="http://localhost:8000/"
             )
             return {"status": intent.status, "client_secret": intent.client_secret}
         except stripe.error.StripeError as e:
