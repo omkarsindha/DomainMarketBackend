@@ -34,12 +34,13 @@ def get_trending_tlds(username: str = Depends(auth_service.verify_token)):
 
 @router.post("/purchase-domain")
 def purchase_domain(
-    domain: str = Query(...),
-    years: int = Query(...),
-    payment_token: str = Query(...),
+    payment_details: PaymentRequest,
     username: str = Depends(auth_service.verify_token),
     db: Session = Depends(get_db),
 ):
+    domain = payment_details.domain
+    years = payment_details.years
+    payment_token = payment_details.payment_token
     return payment.purchase_domain(domain, years, payment_token, username, db)
 
 

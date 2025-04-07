@@ -29,7 +29,5 @@ class DomainsCheckRequest(BaseModel):
 
 class PaymentRequest(BaseModel):
     domain: str
-    card_number: str
-    exp_month: int
-    exp_year: int
-    cvc: str
+    payment_token: str
+    years: int = 1
