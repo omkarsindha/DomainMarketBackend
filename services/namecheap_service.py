@@ -226,24 +226,36 @@ class NamecheapService:
             params[f'{contact_type}Country'] = user_details.country
             params[f'{contact_type}Phone'] = user_details.phone_number
             params[f'{contact_type}EmailAddress'] = user_details.email
+
         params["AddFreeWhoisguard"] = "yes"
         params["WGEnabled"] = "yes"
         params["DomainName"] = domain
         params["Years"] = years
+
         url = self._build_api_url("namecheap.domains.create", **params)
         try:
             response = self._make_api_request(url)
             root = ET.fromstring(response.text)
+            ns = {'ns': 'http://api.namecheap.com/xml.response'}
 
             # Check for API errors
-            if root.find(".//Errors/Error") is not None:
-                error_msg = root.find(".//Errors/Error").text
-                return {"error": error_msg}
+            error = root.find(".//ns:Error", ns)
+            if error is not None:
+                return {"success": False, "error": error.text}
 
-            return {"success": True, "message": "Domain registered successfully", "raw_response": response.text}
+            # Check registration result
+            result = root.find(".//ns:DomainCreateResult", ns)
+            if result is not None and result.attrib.get("Registered") == "true":
+                return {
+                    "success": True,
+                    "message": "Domain registered successfully",
+                    "order_id": result.attrib.get("OrderID")
+                }
+
+            return {"success": False, "error": "Domain registration failed."}
 
         except Exception as e:
-            return {"error": str(e)}
+            return {"success": False, "error": str(e)}
 
     def get_tld_price(self, tld):
         """Fetches the registration price and minimum duration of a given TLD"""

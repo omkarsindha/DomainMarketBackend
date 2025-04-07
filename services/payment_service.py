@@ -19,7 +19,9 @@ class PaymentService:
         """
         # Step 1: Get domain price
         domain_tld = domain.split('.')[-1]
-        domain_price = self.namecheap.get_tld_price(domain_tld).get("price", 0)
+        domain_price_whole = self.namecheap.get_tld_price(domain_tld)
+        domain_price =domain_price_whole.get("price", 0)
+        print(domain_price_whole)
 
         if domain_price <= 0:
             return {"error": "Invalid domain price"}
