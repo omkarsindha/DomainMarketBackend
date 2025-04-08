@@ -1,4 +1,6 @@
 import os
+import random
+
 import requests
 import xml.etree.ElementTree as ET
 from dotenv import load_dotenv
@@ -183,7 +185,7 @@ class NamecheapService:
         except Exception as e:
             return {"error": f"Error fetching TLDs: {str(e)}"}
 
-    def get_trending_keywords(self):
+    def get_trending_domains(self):
         """
         Returns a list of trending keywords for domain names. This list can later be enhanced by fetching from external source
         """
@@ -191,23 +193,46 @@ class NamecheapService:
             "ai", "crypto", "blockchain", "startup", "web3", "nft", "quantum", "cybersecurity", "greenery",
             "automation"
         ]
-        return trending_keywords
+        tld = ["ai", "com", "net"]
+
+        domains = []
+        for keyword in trending_keywords:
+            choices = random.randint(0, len(tld)-1)
+            domain_name = f"{keyword}.{tld[choices]}"
+            domains.append(domain_name)
+        return domains
 
     def get_trending_available_domains(self):
         """
-        Finds trending available domains by checking domain availability for trending keywords.
+        Finds trending available domains by checking domain availability for trending keywords
+        in concurrent batches of 5.
         """
-        trending_keywords = self.get_trending_keywords()
+        trending_domains = self.get_trending_domains()
         available_domains = []
-        for keyword in trending_keywords:
-            domain_name = f"{keyword}.com"
-            url_availability = self._build_api_url("namecheap.domains.check", DomainList=domain_name)
-            response_availability = self._make_api_request(url_availability)
-            print(response_availability.text)
-            if response_availability.status_code == 200 and "Available" in response_availability.text:
-                domain_price = self.get_tld_price("com")
-                available_domains.append({"domain": domain_name, "price": domain_price})
 
+        # Define a helper function for checking availability.
+        def check_availability(domain_name):
+            url_availability = self._build_api_url("namecheap.domains.check", DomainList=domain_name)
+            response = self._make_api_request(url_availability)
+            if response.status_code == 200 and "Available" in response.text:
+                domain_tld = domain_name.split('.')[-1]
+                domain_price = self.get_tld_price(domain_tld)
+                return {"domain": domain_name, "price": domain_price}
+            # Return None if not available.
+            return None
+
+        # Process in batches of 5.
+        batch_size = 5
+        for i in range(0, len(trending_domains), batch_size):
+            batch = trending_domains[i : i + batch_size]
+            with concurrent.futures.ThreadPoolExecutor(max_workers=batch_size) as executor:
+                # Launch all tasks for the current batch.
+                futures = {executor.submit(check_availability, domain): domain for domain in batch}
+                # Wait for all tasks in the batch to complete.
+                for future in concurrent.futures.as_completed(futures):
+                    result = future.result()
+                    if result is not None:
+                        available_domains.append(result)
         return available_domains
 
     def register_domain(self, domain: str, years: int, username, db):
