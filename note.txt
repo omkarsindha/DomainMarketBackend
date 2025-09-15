@@ -1,0 +1,29 @@
+Summary
+- xxxx
+
+Description
+- xxxx
+
+Acceptance Criteria
+- [ ] Criterion 1
+- [ ] Criterion 2
+
+Steps to Reproduce (only for bugs)
+- First Step
+- And so on...
+
+Environment Details (for bugs)
+- Version: xx
+- Platform: xx
+- Browser/Device: xx
+
+Attachments
+- Screenshots or Logs
+
+Story Points
+- xx
+
+Sprint
+- xx
+
+next step is testing the auctions endpoint

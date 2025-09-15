@@ -8,7 +8,7 @@ from sqlalchemy import make_url
 
 from services.database_service import DatabaseService
 import utils.utils as utils
-
+import models.db_models as models
 database_service = DatabaseService()
 
 
@@ -246,6 +246,17 @@ class NamecheapService:
             # Check registration result
             result = root.find(".//ns:DomainCreateResult", ns)
             if result is not None and result.attrib.get("Registered") == "true":
+
+                user = db.query(models.User).filter(models.User.username == username).first()
+                if user:
+                    # Create a new Domains record
+                    new_domain_record = models.Domains(
+                        user_id=user.id,
+                        domain_name=domain
+                    )
+                    db.add(new_domain_record)
+                    db.commit()
+
                 return {
                     "success": True,
                     "message": "Domain registered successfully",

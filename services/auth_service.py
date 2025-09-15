@@ -39,7 +39,7 @@ class AuthService:
         return None
 
     def create_access_token(self, username: str):
-        expiration = datetime.utcnow() + timedelta(hours=1)
+        expiration = datetime.utcnow() + timedelta(hours=1000)
         token_data = {"sub": username, "exp": expiration}
         return jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
 

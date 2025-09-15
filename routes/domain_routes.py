@@ -1,19 +1,18 @@
-from http.client import responses
-
-from fastapi import APIRouter, Query, Depends
+from fastapi import APIRouter, Query, Depends, HTTPException
 from typing import List
 from database.connection import get_db
 from sqlalchemy.orm import Session
-
-from models.api_dto import PaymentRequest
+from models.api_dto import PaymentRequest, UserDomainResponse
 from services import payment_service
 from services.namecheap_service import NamecheapService
-from services.auth_service import AuthService  # Import the authentication service
+from services.auth_service import AuthService
+from services.database_service import DatabaseService
 
 router = APIRouter()
 namecheap = NamecheapService()
 payment = payment_service.PaymentService()
 auth_service = AuthService()
+database_service = DatabaseService()
 
 @router.get("/check")
 def check_domain(domain: str = Query(...), username: str = Depends(auth_service.verify_token)):
@@ -22,12 +21,12 @@ def check_domain(domain: str = Query(...), username: str = Depends(auth_service.
         return {"error": "No domain provided"}
     return namecheap.check_domain_availability(domain)
 
-@router.get("/trending_domains")
+@router.get("/trending-domains")
 def trending_domains(username: str = Depends(auth_service.verify_token)):
     """Gets the trending domains"""
     return namecheap.get_trending_available_domains()
 
-@router.get("/trending_tlds")
+@router.get("/trending-tlds")
 def get_trending_tlds(username: str = Depends(auth_service.verify_token)):
     """Get trending TLDs."""
     return namecheap.get_trending_tlds()
@@ -49,3 +48,8 @@ def register_domain(domain: str = Query(...),years: int = Query(...),
                     username: str = Depends(auth_service.verify_token), db: Session = Depends(get_db)):
     """Register a domain using Namecheap for the authenticated user."""
     return namecheap.register_domain(domain, years, username, db)
+
+
+
+
+

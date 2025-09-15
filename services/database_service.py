@@ -1,10 +1,35 @@
 from sqlalchemy.orm import Session
 
 from database.connection import get_db
-from models.db_models import User, UserDetails
+from models.db_models import User, UserDetails, Domains, Auction, Transaction
 from models.api_dto import DomainRegisterUserDetails
 
 class DatabaseService:
+    def get_user_domains(self, username: str, db: Session):
+        """Fetch all domains owned by a user."""
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            return []  # Or raise HTTPException if user not found
+
+        domains = db.query(Domains).filter(Domains.user_id == user.id).all()
+        return domains
+
+    def get_user_auctions(self, username: str, db: Session):
+        """Fetch all domains owned by a user."""
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            return []  # Or raise HTTPException if user not found
+
+        auctions = db.query(Auction).filter(Auction.seller_id == user.id).all()
+        return auctions
+
+    def get_user_transactions(self, username: str, db: Session):
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            return []
+        transactions = db.query(Transaction).filter(Transaction.user_id == user.id).all()
+        return transactions
+
     def get_user_details(self, username: str, db):
         """Fetch user details based on the username."""
         user = db.query(User).filter(User.username == username).one()
