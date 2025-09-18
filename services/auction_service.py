@@ -62,6 +62,21 @@ class AuctionService:
         # 3. Check if bid amount is valid
         highest_bid = db.query(Bid).filter(Bid.auction_id == auction_id).order_by(Bid.bid_amount.desc()).first()
 
+        # 3b. Prevent same user from bidding twice in a row (only for manual bids)
+        last_bid = (
+            db.query(Bid)
+            .filter(Bid.auction_id == auction_id)
+            .order_by(Bid.created_at.desc())
+            .first()
+        )
+        if last_bid and last_bid.bidder_id == bidder.id:
+            # Check if the last bid was an auto-bid, if so allow the manual bid
+            if not last_bid.is_auto_bid:  # Fixed this line
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="You cannot place two consecutive manual bids. Wait for another bidder."
+                )
+
         min_bid_amount = highest_bid.bid_amount if highest_bid else auction.start_price
 
         if request.amount <= min_bid_amount:
@@ -72,11 +87,32 @@ class AuctionService:
         new_bid = Bid(
             auction_id=auction.id,
             bidder_id=bidder.id,
-            bid_amount=request.amount
+            bid_amount=request.amount,
+            is_auto_bid=False,  # This is a manual bid
+            created_at=datetime.utcnow()
         )
         db.add(new_bid)
         db.commit()
-        db.refresh(auction)  # Refresh auction to show new bid
+        db.refresh(new_bid)
+
+        # 5. Process any auto-bids that should trigger after this manual bid
+        from services.autobid_service import AutoBidService  # Import here to avoid circular imports
+        auto_bid_service = AutoBidService()
+
+        try:
+            final_highest_amount = auto_bid_service.process_auto_bids(
+                auction_id=auction_id,
+                new_bid_amount=float(request.amount),
+                new_bidder_id=bidder.id,
+                db=db
+            )
+            print(f"Auto-bid processing complete. Final highest: ${final_highest_amount}")
+        except Exception as e:
+            # Log the error but don't fail the original bid
+            print(f"Error processing auto-bids: {e}")
+            final_highest_amount = request.amount
+
+        db.refresh(auction)  # Refresh auction to show new bids
         return auction
 
     def get_auction_details(self, auction_id: int, db: Session):
@@ -174,3 +210,4 @@ class AuctionService:
             Auction.status == AuctionStatus.CLOSED
         ).all()
         return [self._format_auction_response(auc) for auc in auctions]
+

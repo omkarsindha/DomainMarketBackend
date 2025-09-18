@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Numeric, Enum
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Numeric, Enum, Float, Boolean
 from sqlalchemy.orm import relationship
 from database.connection import Base
 from datetime import datetime
@@ -12,8 +12,25 @@ class User(Base):
     password_hash = Column(String)
 
     # Relationships
+    auto_bids = relationship("AutoBid", back_populates="bidder")
     details = relationship("UserDetails", back_populates="user", uselist=False)
     domains = relationship("Domains", back_populates="user")
+
+class AutoBid(Base):
+    __tablename__ = "auto_bids"
+
+    id = Column(Integer, primary_key=True, index=True)
+    auction_id = Column(Integer, ForeignKey("auctions.id"), nullable=False)
+    bidder_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    max_amount = Column(Float, nullable=False)
+    increment = Column(Float, nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)  # Added
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)  # Added
+
+    # Relationships
+    auction = relationship("Auction", back_populates="auto_bids")
+    bidder = relationship("User", back_populates="auto_bids")
 
 class UserDetails(Base):
     __tablename__ = "user_details"
@@ -65,6 +82,7 @@ class Auction(Base):
     end_time = Column(DateTime, nullable=False)
     status = Column(Enum(AuctionStatus), default=AuctionStatus.ACTIVE)
 
+    auto_bids = relationship("AutoBid", back_populates="auction")
     domain = relationship("Domains", back_populates="auction")
     seller = relationship("User", foreign_keys='Auction.seller_id')
     winner = relationship("User", foreign_keys='Auction.winner_id')
@@ -79,6 +97,7 @@ class Bid(Base):
     bidder_id = Column(Integer, ForeignKey("users.id"), nullable=False)
 
     bid_amount = Column(Numeric(10, 2), nullable=False)
+    is_auto_bid = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     auction = relationship("Auction", back_populates="bids")

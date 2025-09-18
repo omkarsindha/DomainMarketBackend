@@ -67,6 +67,18 @@ class AuctionResponse(BaseModel):
     class Config:
         orm_mode = True
 
+class AutoBidCreateRequest(BaseModel):
+    max_amount: float = Field(..., gt=0, description="Maximum amount user is willing to bid")
+    increment: float = Field(..., gt=0, description="Step increment for each auto-bid")
+
+class AutoBidResponse(BaseModel):
+    id: int
+    auction_id: int
+    bidder_username: str
+    max_amount: float
+    increment: float
+    is_active: bool
+
 class UserDomainResponse(BaseModel):
     id: int
     domain_name: str
