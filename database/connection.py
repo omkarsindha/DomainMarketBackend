@@ -9,7 +9,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
 def get_db():
-    from models.db_models import User, UserDetails, Domains
+    from models.db_models import User, UserDetails, Domain
     db = SessionLocal()
     try:
         yield db

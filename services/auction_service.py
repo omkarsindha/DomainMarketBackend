@@ -1,9 +1,12 @@
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
-from models.db_models import User, Domains, Auction, Bid, AuctionStatus
+from models.db_models import User, Domain, Auction, Bid, AuctionStatus, TransactionType
 from models.api_dto import AuctionCreateRequest, BidCreateRequest, AuctionResponse, BidResponse
 from typing import List
+
+from services.payment_service import PaymentService
+
 
 class AuctionService:
     def create_auction(self, request: AuctionCreateRequest, username: str, db: Session):
@@ -13,7 +16,7 @@ class AuctionService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Seller not found.")
 
         # Find the domain and verify ownership
-        domain = db.query(Domains).filter(Domains.domain_name == request.domain_name).first()
+        domain = db.query(Domain).filter(Domain.domain_name == request.domain_name).first()
         if not domain:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Domain not found.")
 
@@ -108,16 +111,50 @@ class AuctionService:
         winning_bid = db.query(Bid).filter(Bid.auction_id == auction_id).order_by(Bid.bid_amount.desc()).first()
 
         if winning_bid:
-            # A winner exists
+            # A winner exists, so we process the transfer and transactions
             auction.winner_id = winning_bid.bidder_id
 
-            # Transfer domain ownership
-            domain = db.query(Domains).get(auction.domain_id)
+            # --- A. Transfer domain ownership and update its details ---
+            domain = db.query(Domain).get(auction.domain_id)
             domain.user_id = winning_bid.bidder_id
+            domain.bought_date = datetime.utcnow()  # Set new acquisition date
+            domain.price = winning_bid.bid_amount  # Update price to what the winner paid
 
+            payment_service = PaymentService()
+
+            # Transaction for the WINNER (Buyer)
+            payment_service.create_transaction(
+                user_id=winning_bid.bidder_id,
+                domain_id=domain.id,
+                auction_id=auction.id,
+                transaction_type=TransactionType.AUCTION_WIN,
+                amount=winning_bid.bid_amount,
+                description=f"Won auction for domain {domain.domain_name}",
+                domain_name_at_purchase=domain.domain_name,
+                status="COMPLETED",
+                db=db
+            )
+
+            # Transaction for the SELLER
+            payment_service.create_transaction(
+                user_id=auction.seller_id,
+                domain_id=domain.id,
+                auction_id=auction.id,
+                transaction_type=TransactionType.AUCTION_SALE,  # Use the new type
+                amount=winning_bid.bid_amount,
+                description=f"Sold domain {domain.domain_name} in auction",
+                domain_name_at_purchase=domain.domain_name,
+                status="COMPLETED",
+                db=db
+            )
+
+        # 4. Mark the auction as closed
         auction.status = AuctionStatus.CLOSED
+
+        # 5. Commit all changes to the database at once
         db.commit()
         db.refresh(auction)
+
         return self._format_auction_response(auction)
 
     def _format_auction_response(self, auction: Auction):

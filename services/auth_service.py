@@ -22,7 +22,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 class AuthService:
     def create_user(self, username: str, email: str, password: str, db: Session):
         hashed_password = pwd_context.hash(password)
-        user = User(username=username, password_hash=hashed_password)
+        user = User(username=username, email=email, password_hash=hashed_password)
         db.add(user)
         db.commit()
         db.refresh(user)

@@ -9,11 +9,12 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
+    email = Column(String, nullable=False)
     password_hash = Column(String)
 
     # Relationships
-    details = relationship("UserDetails", back_populates="user", uselist=False)
-    domains = relationship("Domains", back_populates="user")
+    details = relationship("UserDetails", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    domains = relationship("Domain", back_populates="user")
 
 class UserDetails(Base):
     __tablename__ = "user_details"
@@ -33,14 +34,17 @@ class UserDetails(Base):
     # Relationship with User
     user = relationship("User", back_populates="details")
 
-class Domains(Base):
+class Domain(Base):
     __tablename__ = "domains"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     domain_name = Column(String, unique=True, index=True)
+    price = Column(Numeric(10, 2), nullable=False)
+    bought_date = Column(DateTime, nullable=False, default=datetime.utcnow) # Date of acquisition
+    expiry_date = Column(DateTime, nullable=False)
 
-    # Relationship with User
+    # Relationships
     user = relationship("User", back_populates="domains")
     auction = relationship("Auction", back_populates="domain", uselist=False)
 
@@ -65,7 +69,7 @@ class Auction(Base):
     end_time = Column(DateTime, nullable=False)
     status = Column(Enum(AuctionStatus), default=AuctionStatus.ACTIVE)
 
-    domain = relationship("Domains", back_populates="auction")
+    domain = relationship("Domain", back_populates="auction")
     seller = relationship("User", foreign_keys='Auction.seller_id')
     winner = relationship("User", foreign_keys='Auction.winner_id')
     bids = relationship("Bid", back_populates="auction", cascade="all, delete-orphan", order_by="desc(Bid.bid_amount)")
@@ -90,7 +94,7 @@ class TransactionType(enum.Enum):
     DOMAIN_RENEWAL = "DOMAIN_RENEWAL"
     DOMAIN_TRANSFER = "DOMAIN_TRANSFER"
     AUCTION_WIN = "AUCTION_WIN"
-
+    AUCTION_SALE = "AUCTION_SALE"
 
 class Transaction(Base):
     __tablename__ = "transactions"
@@ -111,5 +115,5 @@ class Transaction(Base):
     years_purchased = Column(Integer, nullable=True)
 
     user = relationship("User", backref="transactions")
-    domain = relationship("Domains", backref="transactions")
+    domain = relationship("Domain", backref="transactions")
     auction = relationship("Auction", backref="transactions")

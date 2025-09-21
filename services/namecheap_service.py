@@ -3,9 +3,7 @@ import requests
 import xml.etree.ElementTree as ET
 from dotenv import load_dotenv
 import concurrent.futures
-
-from sqlalchemy import make_url
-
+from datetime import datetime, timedelta
 from services.database_service import DatabaseService
 import utils.utils as utils
 import models.db_models as models
@@ -157,24 +155,24 @@ class NamecheapService:
     def get_trending_tlds(self):
         """Fetches trending TLDs and their pricing."""
         try:
-            tld_url = self._build_api_url("namecheap.domains.getTldList")
-            tld_response = self._make_api_request(tld_url)
+            # tld_url = self._build_api_url("namecheap.domains.getTldList")
+            # tld_response = self._make_api_request(tld_url)
+            #
+            # print("Getting TLD list...")
+            #
+            # root = ET.fromstring(tld_response.text)
+            # namespace = {"": "http://api.namecheap.com/xml.response"}
+            #
+            # tld_elements = root.findall(".//Tlds/Tld", namespace)
+            #
+            # if not tld_elements:
+            #     return {"error": "No TLDs found in the response"}
 
-            print("Getting TLD list...")
-
-            root = ET.fromstring(tld_response.text)
-            namespace = {"": "http://api.namecheap.com/xml.response"}
-
-            tld_elements = root.findall(".//Tlds/Tld", namespace)
-
-            if not tld_elements:
-                return {"error": "No TLDs found in the response"}
-
-            tlds = []
-            for tld in tld_elements:
-                tld_name = tld.get("Name")
-                if tld_name:
-                    tlds.append(tld_name)
+            tlds = ["ai", "com", "xyz", "io", "app", "dev", "store", "shop", "online", "co"]
+            # for tld in tld_elements:
+            #     tld_name = tld.get("Name")
+            #     if tld_name:
+            #         tlds.append(tld_name)
 
             return tlds
 
@@ -210,7 +208,7 @@ class NamecheapService:
 
         return available_domains
 
-    def register_domain(self, domain: str, years: int, username, db):
+    def register_domain(self, domain: str, years: int, price, username, db):
         """
         Registers a domain using Namecheap API with only Registrant info.
         """
@@ -249,10 +247,15 @@ class NamecheapService:
 
                 user = db.query(models.User).filter(models.User.username == username).first()
                 if user:
-                    # Create a new Domains record
-                    new_domain_record = models.Domains(
+                    # Create a new Domain record
+                    current_time = datetime.utcnow()
+                    expiration_date = current_time + timedelta(days=years * 365)
+                    new_domain_record = models.Domain(
                         user_id=user.id,
-                        domain_name=domain
+                        domain_name=domain,
+                        price=price,
+                        bought_date=current_time,
+                        expiry_date=expiration_date
                     )
                     db.add(new_domain_record)
                     db.commit()

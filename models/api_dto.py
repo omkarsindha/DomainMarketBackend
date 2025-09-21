@@ -70,6 +70,9 @@ class AuctionResponse(BaseModel):
 class UserDomainResponse(BaseModel):
     id: int
     domain_name: str
+    price: Decimal
+    bought_date: datetime
+    expiry_date: datetime
 
     class Config:
         orm_mode = True
@@ -87,3 +90,10 @@ class UserTransactionResponse(BaseModel):
 
     class Config:
         orm_mode = True
+
+class UserMyDetailsResponse(BaseModel):
+    username: str
+    email: str
+
+    class Config:
+        from_attributes = True

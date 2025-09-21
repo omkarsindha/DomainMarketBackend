@@ -4,7 +4,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 import stripe
 from services.namecheap_service import NamecheapService
-from models.db_models import Transaction, TransactionType, Domains, User
+from models.db_models import Transaction, TransactionType, Domain, User
 
 class PaymentService:
     def __init__(self):
@@ -20,7 +20,6 @@ class PaymentService:
         domain_tld = domain.split('.')[-1]
         domain_price_whole = self.namecheap.get_tld_price(domain_tld)
         domain_price =domain_price_whole.get("price", 0)
-        print(domain_price_whole)
 
         if domain_price <= 0:
             return {"error": "Invalid domain price"}
@@ -41,12 +40,12 @@ class PaymentService:
         #     return {"error": "Payment not successful"}
 
         # Step 3: Register domain after successful payment
-        registration_result = self.namecheap.register_domain(domain, years, username, db)
+        registration_result = self.namecheap.register_domain(domain, years, total_price, username, db)
 
         if registration_result.get("success"):
             user = db.query(User).filter(User.username == username).first()
-            registered_domain_obj = db.query(Domains).filter(Domains.domain_name == domain,
-                                                             Domains.user_id == user.id).first()
+            registered_domain_obj = db.query(Domain).filter(Domain.domain_name == domain,
+                                                            Domain.user_id == user.id).first()
             if registered_domain_obj:
                 self.create_transaction(
                     user_id=user.id,

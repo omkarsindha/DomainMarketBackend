@@ -43,3 +43,9 @@ def get_my_domains(username: str = Depends(auth_service.verify_token), db: Sessi
     """
     transactions = database_service.get_user_transactions(username, db)
     return transactions
+
+@router.get("/")
+def get_user(username: str = Depends(auth_service.verify_token), db: Session = Depends(get_db)):
+    """Check availability of additional details in user_details model."""
+    user = database_service.get_user(username, db)
+    return user

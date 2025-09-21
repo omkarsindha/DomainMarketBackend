@@ -42,7 +42,6 @@ def purchase_domain(
     payment_token = payment_details.payment_token
     return payment.purchase_domain(domain, years, payment_token, username, db)
 
-
 @router.post("/register")
 def register_domain(domain: str = Query(...),years: int = Query(...),
                     username: str = Depends(auth_service.verify_token), db: Session = Depends(get_db)):
