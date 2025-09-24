@@ -3,6 +3,8 @@ import dotenv
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 import stripe
+from stripe import SetupIntent, PaymentMethod
+
 from services.namecheap_service import NamecheapService
 from models.db_models import Transaction, TransactionType, Domain, User
 
@@ -111,3 +113,40 @@ class PaymentService:
         db.commit()
         db.refresh(new_transaction)
         return new_transaction
+
+    def create_setup_intent(self, username: str, db: Session):
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            raise HTTPException(404, "User not found")
+        if not user.stripe_customer_id:
+            customer = stripe.Customer.create(email=user.email, name=user.username)
+            user.stripe_customer_id = customer.id
+            db.commit()
+
+            #####for testing purpose only #####
+        pm = stripe.PaymentMethod.create(
+            type="card",
+            card={"token": "tok_visa"}  # Stripe provides test tokens like tok_visa, tok_mastercard
+        )
+        print(pm.id)  # e.g. pm_1QcXYZ... use this value to use save payment method
+
+
+        setup_intent = stripe.SetupIntent.create(
+            customer=user.stripe_customer_id,
+            payment_method_types=["card"]
+        )
+        return {"client secret": setup_intent.client_secret}
+
+    def save_payment_method(self, username: str, payment_method_id: str, db: Session):
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            raise HTTPException(404, "User not found")
+
+        # Attach the payment method to customer
+        stripe.PaymentMethod.attach(payment_method_id, customer=user.stripe_customer_id)
+        stripe.Customer.modify(user.stripe_customer_id, invoice_settings={"default_payment_method": payment_method_id})
+
+        user.stripe_payment_method_id = payment_method_id
+        db.commit()
+        return {"message": "Payment method saved"}
+

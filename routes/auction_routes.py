@@ -2,14 +2,18 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 from typing import List
 
+from stripe import PaymentMethodService
+
 from database.connection import get_db
 from services.auth_service import AuthService
 from services.auction_service import AuctionService
 from models.api_dto import AuctionCreateRequest, BidCreateRequest, AuctionResponse
+from services.payment_service import PaymentService
 
 router = APIRouter()
 auth_service = AuthService()
 auction_service = AuctionService()
+payment_method_service = PaymentService()
 
 @router.post("/", status_code=status.HTTP_201_CREATED, response_model=AuctionResponse)
 def create_auction(
@@ -98,4 +102,5 @@ def close_auction(
     This will determine the winner and transfer the domain.
     """
     return auction_service.close_auction(auction_id, username, db)
+
 

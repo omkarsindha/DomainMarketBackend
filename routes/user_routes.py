@@ -1,10 +1,12 @@
+import stripe
 from fastapi import APIRouter, Depends
 
+from routes.auction_routes import payment_method_service
 from services import auction_service
 from services.auth_service import AuthService
 from services.namecheap_service import NamecheapService
 from services.database_service import DatabaseService
-from models.api_dto import DomainRegisterUserDetails, UserDomainResponse, UserTransactionResponse
+from models.api_dto import DomainRegisterUserDetails, UserDomainResponse, UserTransactionResponse, SavePaymentRequest
 from database.connection import get_db
 from sqlalchemy.orm import Session
 from typing import List
@@ -49,3 +51,16 @@ def get_user(username: str = Depends(auth_service.verify_token), db: Session = D
     """Check availability of additional details in user_details model."""
     user = database_service.get_user(username, db)
     return user
+
+
+@router.post("/setup-intent")
+def setup_intent(
+        username: str,
+        db: Session = Depends(get_db)
+):
+    return payment_method_service.create_setup_intent(username, db)
+
+@router.post("/save-payment-method")
+def save_payment_method(request: SavePaymentRequest, db: Session = Depends(get_db)):
+    return payment_method_service.save_payment_method(request.username, request.payment_method_id, db)
+

@@ -1,3 +1,4 @@
+import stripe
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
@@ -48,6 +49,9 @@ class AuctionService:
         # 1. Find the bidder and the auction
         bidder = db.query(User).filter(User.username == username).first()
         auction = db.query(Auction).get(auction_id)
+
+        if not bidder.stripe_payment_method_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Setup payment method not found.")
 
         if not auction:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Auction not found.")
@@ -108,7 +112,12 @@ class AuctionService:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Auction is not active.")
 
         # 3. Find the winning bid
-        winning_bid = db.query(Bid).filter(Bid.auction_id == auction_id).order_by(Bid.bid_amount.desc()).first()
+        winning_bid = (
+            db.query(Bid)
+            .filter(Bid.auction_id == auction_id)
+            .order_by(Bid.bid_amount.desc())
+            .first()
+        )
 
         if winning_bid:
             # A winner exists, so we process the transfer and transactions
@@ -117,8 +126,33 @@ class AuctionService:
             # --- A. Transfer domain ownership and update its details ---
             domain = db.query(Domain).get(auction.domain_id)
             domain.user_id = winning_bid.bidder_id
-            domain.bought_date = datetime.utcnow()  # Set new acquisition date
-            domain.price = winning_bid.bid_amount  # Update price to what the winner paid
+            domain.bought_date = datetime.utcnow()
+            domain.price = winning_bid.bid_amount
+
+            # --- B. Process payment with Stripe ---
+            winner = db.query(User).get(winning_bid.bidder_id)
+            if not winner.stripe_customer_id or not winner.stripe_payment_method_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Winner does not have a saved payment method."
+                )
+
+            try:
+                payment_intent = stripe.PaymentIntent.create(
+                    amount=int(winning_bid.bid_amount * 100),  # Stripe expects cents
+                    currency="cad",
+                    customer=winner.stripe_customer_id,
+                    payment_method=winner.stripe_payment_method_id,
+                    off_session=True,  # no user interaction at auction close
+                    confirm=True
+                )
+                payment_status = payment_intent.status  # succeeded, requires_action, etc.
+            except stripe.error.CardError as e:
+                # Card declined, insufficient funds, etc.
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail=f"Payment failed: {e.user_message}"
+                )
 
             payment_service = PaymentService()
 
@@ -131,7 +165,7 @@ class AuctionService:
                 amount=winning_bid.bid_amount,
                 description=f"Won auction for domain {domain.domain_name}",
                 domain_name_at_purchase=domain.domain_name,
-                status="COMPLETED",
+                status=payment_status.upper(),
                 db=db
             )
 
@@ -140,11 +174,11 @@ class AuctionService:
                 user_id=auction.seller_id,
                 domain_id=domain.id,
                 auction_id=auction.id,
-                transaction_type=TransactionType.AUCTION_SALE,  # Use the new type
+                transaction_type=TransactionType.AUCTION_SALE,
                 amount=winning_bid.bid_amount,
                 description=f"Sold domain {domain.domain_name} in auction",
                 domain_name_at_purchase=domain.domain_name,
-                status="COMPLETED",
+                status=payment_status.upper(),
                 db=db
             )
 

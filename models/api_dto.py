@@ -67,6 +67,10 @@ class AuctionResponse(BaseModel):
     class Config:
         orm_mode = True
 
+class SavePaymentRequest(BaseModel):
+    username: str
+    payment_method_id: str
+
 class UserDomainResponse(BaseModel):
     id: int
     domain_name: str
