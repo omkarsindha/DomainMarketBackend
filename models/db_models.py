@@ -11,7 +11,6 @@ class User(Base):
     username = Column(String, unique=True, index=True)
     email = Column(String, nullable=False)
     password_hash = Column(String)
-    #for payments(Jeeni)
     stripe_customer_id = Column(String, nullable=True)
     stripe_payment_method_id = Column(String, nullable=True)
 

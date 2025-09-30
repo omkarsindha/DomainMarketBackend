@@ -7,6 +7,8 @@ from stripe import SetupIntent, PaymentMethod
 
 from services.namecheap_service import NamecheapService
 from models.db_models import Transaction, TransactionType, Domain, User
+from models.api_dto import PaymentRequest
+
 
 class PaymentService:
     def __init__(self):
@@ -14,38 +16,59 @@ class PaymentService:
         stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
         self.namecheap = NamecheapService()
 
-    def purchase_domain(self, domain: str, years: int, payment_token: str, username: str, db: Session):
+    def purchase_domain(self, payment_details: PaymentRequest, username: str, db: Session):
         """
-        Pay for a domain and register it if payment succeeds.
+        Pay for a domain using a saved payment method and register it if payment succeeds.
         """
-        # Step 1: Get domain price
-        domain_tld = domain.split('.')[-1]
-        domain_price_whole = self.namecheap.get_tld_price(domain_tld)
-        domain_price =domain_price_whole.get("price", 0)
+        # Step 1: Get the user and their saved payment details
+        user = db.query(User).filter(User.username == username).first()
+        if not user or not user.stripe_customer_id or not user.stripe_payment_method_id:
+            raise HTTPException(
+                status_code=400,
+                detail="A card is required to complete this purchase. Please add one to your account first."
+            )
 
-        if domain_price <= 0:
-            return {"error": "Invalid domain price"}
+        total_price = payment_details.price
+        if total_price <= 0:
+            return {"error": "Invalid domain price provided."}
 
-        total_price = domain_price * years
         amount_in_cents = int(total_price * 100)
-        ################ Commented out the stripe payment to test
-        # Step 2: Create and confirm payment
-        # payment_response = self.create_and_confirm_payment(
-        #     amount=amount_in_cents,
-        #     payment_method_id=payment_token
-        # )
-        #
-        # if "error" in payment_response:
-        #     return {"error": f"Payment failed: {payment_response['error']}"}
-        #
-        # if payment_response.get("status") != "succeeded":
-        #     return {"error": "Payment not successful"}
+        domain = payment_details.domain
+        years = payment_details.years
 
-        # Step 3: Register domain after successful payment
+        # Step 3: Create and confirm the payment using the saved method
+        payment_response = self.create_and_confirm_payment(
+            amount=amount_in_cents,
+            customer_id=user.stripe_customer_id,
+            payment_method_id=user.stripe_payment_method_id
+        )
+        payment_intent_id = payment_response.get("payment_intent_id")
+
+        if "error" in payment_response:
+            return {"error": f"Payment failed: {payment_response['error']}"}
+
+        if payment_response.get("status") != "succeeded":
+            return {"error": f"Payment not successful. Status: {payment_response.get('status')}"}
+
+        # Step 4: If payment is successful, register the domain
         registration_result = self.namecheap.register_domain(domain, years, total_price, username, db)
+        print(registration_result)
 
+        # Step 5: Registration unsuccessful
+        if not registration_result.get("success"):
+            self._issue_refund(payment_intent_id)
+
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "code": "DOMAIN_REGISTRATION_FAILED",
+                    "message": "Your payment was successful, but the domain registration failed. Your payment has been automatically refunded.",
+                    "provider_error": registration_result.get("error", "Unknown error from domain provider.")
+                }
+            )
+
+        # Step 6: Create a transaction record
         if registration_result.get("success"):
-            user = db.query(User).filter(User.username == username).first()
             registered_domain_obj = db.query(Domain).filter(Domain.domain_name == domain,
                                                             Domain.user_id == user.id).first()
             if registered_domain_obj:
@@ -61,28 +84,41 @@ class PaymentService:
                     db=db
                 )
 
-
         return {
-            "payment_status": "succeeded",
+            "payment_status": payment_response.get("status"),
             "registration_result": registration_result
         }
-        # return {
-        #     "payment_status": payment_response.get("status"),
-        #     "registration_result": registration_result
-        # }
 
-    def create_and_confirm_payment(self, amount: int, payment_method_id: str, currency: str = "cad"):
+    def create_and_confirm_payment(self, amount: int, customer_id: str, payment_method_id: str, currency: str = "cad"):
+        """
+        Creates and confirms a payment for a customer using their saved payment method.
+        This is considered an "off-session" payment.
+        """
         try:
             intent = stripe.PaymentIntent.create(
                 amount=amount,
                 currency=currency,
+                customer=customer_id,
                 payment_method=payment_method_id,
+                off_session=True,
                 confirm=True,
-                return_url="http://localhost:8000/"
             )
-            return {"status": intent.status, "client_secret": intent.client_secret}
+            return {"status": intent.status}
+        except stripe.error.CardError as e:
+            return {"error": e.user_message or str(e)}
         except stripe.error.StripeError as e:
             return {"error": str(e)}
+
+    def _issue_refund(self, payment_intent_id: str):
+        """
+        Issues a full refund for a given Payment Intent.
+        """
+        try:
+            stripe.Refund.create(payment_intent=payment_intent_id)
+            print(f"Successfully issued refund for Payment Intent: {payment_intent_id}")
+        except stripe.error.StripeError as e:
+            print(f"CRITICAL ERROR: Failed to issue refund for {payment_intent_id}. Error: {e}")
+
 
     def create_transaction(
             self,

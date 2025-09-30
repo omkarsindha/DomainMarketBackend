@@ -33,7 +33,7 @@ class DomainsCheckRequest(BaseModel):
 
 class PaymentRequest(BaseModel):
     domain: str
-    payment_token: str
+    price: float
     years: int = 1
 
 

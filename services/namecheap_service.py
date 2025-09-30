@@ -154,32 +154,8 @@ class NamecheapService:
 
     def get_trending_tlds(self):
         """Fetches trending TLDs and their pricing."""
-        try:
-            # tld_url = self._build_api_url("namecheap.domains.getTldList")
-            # tld_response = self._make_api_request(tld_url)
-            #
-            # print("Getting TLD list...")
-            #
-            # root = ET.fromstring(tld_response.text)
-            # namespace = {"": "http://api.namecheap.com/xml.response"}
-            #
-            # tld_elements = root.findall(".//Tlds/Tld", namespace)
-            #
-            # if not tld_elements:
-            #     return {"error": "No TLDs found in the response"}
-
-            tlds = ["ai", "com", "xyz", "io", "app", "dev", "store", "shop", "online", "co"]
-            # for tld in tld_elements:
-            #     tld_name = tld.get("Name")
-            #     if tld_name:
-            #         tlds.append(tld_name)
-
-            return tlds
-
-        except ET.ParseError as e:
-            return {"error": f"Failed to parse XML response: {str(e)}"}
-        except Exception as e:
-            return {"error": f"Error fetching TLDs: {str(e)}"}
+        tlds = ["ai", "com", "xyz", "io", "app", "dev", "store", "shop", "online", "co"]
+        return tlds
 
     def get_trending_keywords(self):
         """
