@@ -126,23 +126,22 @@ class PaymentService:
             #####for testing purpose only #####
         pm = stripe.PaymentMethod.create(
             type="card",
-            card={"token": "tok_visa"}  # Stripe provides test tokens like tok_visa, tok_mastercard
+            card={"token": "tok_visa"}
         )
-        print(pm.id)  # e.g. pm_1QcXYZ... use this value to use save payment method
+        print(pm.id)
 
 
         setup_intent = stripe.SetupIntent.create(
             customer=user.stripe_customer_id,
             payment_method_types=["card"]
         )
-        return {"client secret": setup_intent.client_secret}
+        return {"client_secret": setup_intent.client_secret}
 
     def save_payment_method(self, username: str, payment_method_id: str, db: Session):
         user = db.query(User).filter(User.username == username).first()
         if not user:
             raise HTTPException(404, "User not found")
 
-        # Attach the payment method to customer
         stripe.PaymentMethod.attach(payment_method_id, customer=user.stripe_customer_id)
         stripe.Customer.modify(user.stripe_customer_id, invoice_settings={"default_payment_method": payment_method_id})
 
@@ -150,3 +149,30 @@ class PaymentService:
         db.commit()
         return {"message": "Payment method saved"}
 
+    def get_payment_info(self, username: str, db: Session):
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            raise HTTPException(404, "User not found")
+
+        return {
+            "username": user.username,
+            "stripe_customer_id": user.stripe_customer_id,
+            "stripe_payment_method_id": user.stripe_payment_method_id,
+        }
+
+    def remove_payment_method(self, username: str, db: Session):
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            raise HTTPException(404, "User not found")
+
+        if not user.stripe_payment_method_id:
+            raise HTTPException(400, "No payment method to remove")
+
+        try:
+            stripe.PaymentMethod.detach(user.stripe_payment_method_id)
+            user.stripe_payment_method_id = None
+            db.commit()
+
+            return {"message": "Payment method removed successfully"}
+        except stripe.error.StripeError as e:
+            raise HTTPException(400, str(e))

@@ -1,12 +1,12 @@
-import stripe
 from fastapi import APIRouter, Depends
 
-from routes.auction_routes import payment_method_service
-from services import auction_service
-from services.auth_service import AuthService
 from services.namecheap_service import NamecheapService
+from services.payment_service import PaymentService
+from services.auth_service import AuthService
 from services.database_service import DatabaseService
-from models.api_dto import DomainRegisterUserDetails, UserDomainResponse, UserTransactionResponse, SavePaymentRequest
+
+from models.api_dto import DomainRegisterUserDetails, UserDomainResponse, UserTransactionResponse, SavePaymentRequest, \
+    UserMyDetailsResponse
 from database.connection import get_db
 from sqlalchemy.orm import Session
 from typing import List
@@ -15,6 +15,7 @@ router = APIRouter()
 namecheap = NamecheapService()
 database_service = DatabaseService()
 auth_service = AuthService()
+payment_service = PaymentService()
 
 
 @router.get("/user-details")
@@ -39,28 +40,49 @@ def get_my_domains(username: str = Depends(auth_service.verify_token), db: Sessi
     return domains
 
 @router.get("/my-transactions", response_model=List[UserTransactionResponse])
-def get_my_domains(username: str = Depends(auth_service.verify_token), db: Session = Depends(get_db)):
+def get_my_transactions(username: str = Depends(auth_service.verify_token), db: Session = Depends(get_db)):
     """
     Get a list of all transactions owned by the user.
     """
     transactions = database_service.get_user_transactions(username, db)
     return transactions
 
-@router.get("/")
+@router.get("/", response_model=UserMyDetailsResponse)
 def get_user(username: str = Depends(auth_service.verify_token), db: Session = Depends(get_db)):
-    """Check availability of additional details in user_details model."""
+    """Gets the current user's details"""
     user = database_service.get_user(username, db)
     return user
 
 
 @router.post("/setup-intent")
 def setup_intent(
-        username: str,
+        username: str = Depends(auth_service.verify_token),
         db: Session = Depends(get_db)
 ):
-    return payment_method_service.create_setup_intent(username, db)
+    """Creates a setup intent for the authenticated user to save a payment method."""
+    return payment_service.create_setup_intent(username, db)
 
 @router.post("/save-payment-method")
-def save_payment_method(request: SavePaymentRequest, db: Session = Depends(get_db)):
-    return payment_method_service.save_payment_method(request.username, request.payment_method_id, db)
+def save_payment_method(
+    request: SavePaymentRequest,
+    username: str = Depends(auth_service.verify_token),
+    db: Session = Depends(get_db)
+):
+    """Saves a payment method for the authenticated user."""
+    return payment_service.save_payment_method(username, request.payment_method_id, db)
 
+@router.get("/payment-info/")
+def get_payment_info(
+    username: str = Depends(auth_service.verify_token),
+    db: Session = Depends(get_db)
+):
+    """Gets payment information for the authenticated user."""
+    return payment_service.get_payment_info(username, db)
+
+@router.delete("/payment-method/")
+def remove_payment_method(
+    username: str = Depends(auth_service.verify_token),
+    db: Session = Depends(get_db)
+):
+    """Removes the payment method for the authenticated user."""
+    return payment_service.remove_payment_method(username, db)
