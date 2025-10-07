@@ -103,7 +103,7 @@ class PaymentService:
                 off_session=True,
                 confirm=True,
             )
-            return {"status": intent.status}
+            return {"status": intent.status, "payment_intent_id": intent.id}
         except stripe.error.CardError as e:
             return {"error": e.user_message or str(e)}
         except stripe.error.StripeError as e:
@@ -128,6 +128,7 @@ class PaymentService:
             description: str = None,
             domain_id: int = None,
             auction_id: int = None,
+            listing_id: int = None,
             domain_name_at_purchase: str = None,
             years_purchased: int = None,
             status: str = "COMPLETED",
@@ -141,6 +142,7 @@ class PaymentService:
             description=description,
             domain_id=domain_id,
             auction_id=auction_id,
+            listing_id=listing_id,
             domain_name_at_purchase=domain_name_at_purchase,
             years_purchased=years_purchased,
             status=status

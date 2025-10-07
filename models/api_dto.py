@@ -67,6 +67,26 @@ class AuctionResponse(BaseModel):
     class Config:
         orm_mode = True
 
+
+class ListingCreateRequest(BaseModel):
+    domain_name: str
+    price: float = Field(..., gt=0, description="The fixed price for the domain.")
+
+
+class ListingResponse(BaseModel):
+    id: int
+    domain_name: str
+    seller_username: str
+    price: float
+    created_at: datetime
+    sold_at: Optional[datetime] = None
+    status: str
+    buyer_username: Optional[str] = None
+
+    class Config:
+        orm_mode = True
+
+
 class SavePaymentRequest(BaseModel):
     username: str
     payment_method_id: str
@@ -83,8 +103,8 @@ class UserDomainResponse(BaseModel):
 
 class UserTransactionResponse(BaseModel):
     id: int
-    transaction_type: str # Map enum to string
-    amount: Decimal # Use Decimal to preserve precision
+    transaction_type: str
+    amount: Decimal
     currency: str
     transaction_date: datetime
     status: str

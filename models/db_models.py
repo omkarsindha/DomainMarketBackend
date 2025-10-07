@@ -43,12 +43,13 @@ class Domain(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     domain_name = Column(String, unique=True, index=True)
     price = Column(Numeric(10, 2), nullable=False)
-    bought_date = Column(DateTime, nullable=False, default=datetime.utcnow) # Date of acquisition
+    bought_date = Column(DateTime, nullable=False, default=datetime.utcnow)
     expiry_date = Column(DateTime, nullable=False)
 
     # Relationships
     user = relationship("User", back_populates="domains")
     auction = relationship("Auction", back_populates="domain", uselist=False)
+    listing = relationship("Listing", back_populates="domain", uselist=False)
 
 
 class AuctionStatus(enum.Enum):
@@ -91,20 +92,48 @@ class Bid(Base):
     bidder = relationship("User")
 
 
+class ListingStatus(enum.Enum):
+    ACTIVE = "ACTIVE"
+    SOLD = "SOLD"
+    CANCELLED = "CANCELLED"
+
+
+class Listing(Base):
+    __tablename__ = "listings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    domain_id = Column(Integer, ForeignKey("domains.id"), unique=True, nullable=False)
+    seller_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    buyer_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    price = Column(Numeric(10, 2), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    sold_at = Column(DateTime, nullable=True)
+    status = Column(Enum(ListingStatus), default=ListingStatus.ACTIVE)
+
+    domain = relationship("Domain", back_populates="listing")
+    seller = relationship("User", foreign_keys='Listing.seller_id')
+    buyer = relationship("User", foreign_keys='Listing.buyer_id')
+
+
 class TransactionType(enum.Enum):
     DOMAIN_REGISTRATION = "DOMAIN_REGISTRATION"
     DOMAIN_RENEWAL = "DOMAIN_RENEWAL"
     DOMAIN_TRANSFER = "DOMAIN_TRANSFER"
     AUCTION_WIN = "AUCTION_WIN"
     AUCTION_SALE = "AUCTION_SALE"
+    LISTING_PURCHASE = "LISTING_PURCHASE"
+    LISTING_SALE = "LISTING_SALE"
+
 
 class Transaction(Base):
     __tablename__ = "transactions"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    domain_id = Column(Integer, ForeignKey("domains.id"), nullable=True) # Nullable if transaction is not domain specific
-    auction_id = Column(Integer, ForeignKey("auctions.id"), nullable=True) # Nullable if not related to an auction
+    domain_id = Column(Integer, ForeignKey("domains.id"), nullable=True)
+    auction_id = Column(Integer, ForeignKey("auctions.id"), nullable=True)
+    listing_id = Column(Integer, ForeignKey("listings.id"), nullable=True)
 
     transaction_type = Column(Enum(TransactionType), nullable=False)
     amount = Column(Numeric(10, 2), nullable=False)
@@ -119,3 +148,4 @@ class Transaction(Base):
     user = relationship("User", backref="transactions")
     domain = relationship("Domain", backref="transactions")
     auction = relationship("Auction", backref="transactions")
+    listing = relationship("Listing", backref="transactions")
