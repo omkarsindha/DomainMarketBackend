@@ -2,18 +2,41 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session, joinedload
 
 from database.connection import get_db
-from models.db_models import User, UserDetails, Domain, Auction, Transaction
+from models.db_models import User, UserDetails, Domain, Auction, Transaction, Listing, AuctionStatus, ListingStatus
 from models.api_dto import DomainRegisterUserDetails
 
 class DatabaseService:
     def get_user_domains(self, username: str, db: Session):
-        """Fetch all domains owned by a user."""
+        """
+        Fetch all domains owned by a user, including their auction and listing status.
+        """
         user = db.query(User).filter(User.username == username).first()
         if not user:
-            return []  # Or raise HTTPException if user not found
+            return []
+        # query domains and left join with active auctions and listings
+        domains_with_status = db.query(
+            Domain,
+            Auction.id.isnot(None).label("is_auctioned"),
+            Listing.id.isnot(None).label("is_listed")
+        ).outerjoin(
+            Auction, (Domain.id == Auction.domain_id) & (Auction.status == AuctionStatus.ACTIVE)
+        ).outerjoin(
+            Listing, (Domain.id == Listing.domain_id) & (Listing.status == ListingStatus.ACTIVE)
+        ).filter(Domain.user_id == user.id).all()
 
-        domains = db.query(Domain).filter(Domain.user_id == user.id).all()
-        return domains
+        response = []
+        for domain, is_auctioned, is_listed in domains_with_status:
+            response.append({
+                "id": domain.id,
+                "domain_name": domain.domain_name,
+                "price": domain.price,
+                "bought_date": domain.bought_date,
+                "expiry_date": domain.expiry_date,
+                "is_auctioned": is_auctioned,
+                "is_listed": is_listed,
+            })
+
+        return response
 
     def get_user_auctions(self, username: str, db: Session):
         """Fetch all domains owned by a user."""

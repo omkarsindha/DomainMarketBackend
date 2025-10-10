@@ -46,7 +46,7 @@ class AuctionService:
         return new_auction
 
     def place_bid(self, auction_id: int, request: BidCreateRequest, username: str, db: Session):
-        # 1. Find the bidder and the auction
+        # find the bidder and the auction
         bidder = db.query(User).filter(User.username == username).first()
         auction = db.query(Auction).get(auction_id)
 
@@ -56,7 +56,7 @@ class AuctionService:
         if not auction:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Auction not found.")
 
-        # 2. Validation checks
+        #validation checks
         if auction.status != AuctionStatus.ACTIVE:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This auction is not active.")
 
@@ -66,7 +66,7 @@ class AuctionService:
         if auction.seller_id == bidder.id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You cannot bid on your own auction.")
 
-        # 3. Check if bid amount is valid
+        # check if bid amount is valid
         highest_bid = db.query(Bid).filter(Bid.auction_id == auction_id).order_by(Bid.bid_amount.desc()).first()
 
         min_bid_amount = highest_bid.bid_amount if highest_bid else auction.start_price
@@ -75,7 +75,7 @@ class AuctionService:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail=f"Your bid must be higher than the current highest bid of ${min_bid_amount}.")
 
-        # 4. Create and save the new bid
+        # create and save the new bid
         new_bid = Bid(
             auction_id=auction.id,
             bidder_id=bidder.id,

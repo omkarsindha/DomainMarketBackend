@@ -97,8 +97,9 @@ class UserDomainResponse(BaseModel):
     price: Decimal
     bought_date: datetime
     expiry_date: datetime
-
-    class Config:
+    is_auctioned: bool
+    is_listed: bool
+class Config:
         orm_mode = True
 
 class UserTransactionResponse(BaseModel):

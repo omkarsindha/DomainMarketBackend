@@ -20,7 +20,7 @@ class PaymentService:
         """
         Pay for a domain using a saved payment method and register it if payment succeeds.
         """
-        # Step 1: Get the user and their saved payment details
+        # Find username
         user = db.query(User).filter(User.username == username).first()
         if not user or not user.stripe_customer_id or not user.stripe_payment_method_id:
             raise HTTPException(
@@ -29,14 +29,12 @@ class PaymentService:
             )
 
         total_price = payment_details.price
-        if total_price <= 0:
-            return {"error": "Invalid domain price provided."}
-
         amount_in_cents = int(total_price * 100)
         domain = payment_details.domain
         years = payment_details.years
+        if total_price <= 0:
+            return {"error": "Invalid domain price provided."}
 
-        # Step 3: Create and confirm the payment using the saved method
         payment_response = self.create_and_confirm_payment(
             amount=amount_in_cents,
             customer_id=user.stripe_customer_id,
@@ -50,11 +48,11 @@ class PaymentService:
         if payment_response.get("status") != "succeeded":
             return {"error": f"Payment not successful. Status: {payment_response.get('status')}"}
 
-        # Step 4: If payment is successful, register the domain
+        #  If payment is successful then I register the domain
         registration_result = self.namecheap.register_domain(domain, years, total_price, username, db)
         print(registration_result)
 
-        # Step 5: Registration unsuccessful
+        # If Registration unsuccessful
         if not registration_result.get("success"):
             self._issue_refund(payment_intent_id)
 
@@ -67,7 +65,7 @@ class PaymentService:
                 }
             )
 
-        # Step 6: Create a transaction record
+        # create a transaction if everything was successful
         if registration_result.get("success"):
             registered_domain_obj = db.query(Domain).filter(Domain.domain_name == domain,
                                                             Domain.user_id == user.id).first()
@@ -92,7 +90,6 @@ class PaymentService:
     def create_and_confirm_payment(self, amount: int, customer_id: str, payment_method_id: str, currency: str = "cad"):
         """
         Creates and confirms a payment for a customer using their saved payment method.
-        This is considered an "off-session" payment.
         """
         try:
             intent = stripe.PaymentIntent.create(

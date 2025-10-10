@@ -49,7 +49,7 @@ class NamecheapService:
         similar_domains = utils.generate_similar_domains(base_name)
         all_domains_to_check = [original_domain] + similar_domains
 
-        batch_size = 5
+        batch_size = 2
         domain_results = {}
         tlds_to_check = set()
 
