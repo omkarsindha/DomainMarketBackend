@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 from typing import List, Optional
 from datetime import datetime
 from decimal import Decimal
@@ -122,3 +122,78 @@ class UserMyDetailsResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+#For domain management
+
+class DNSRecordRequest(BaseModel):
+    """Request model for a single DNS record."""
+    hostname: str = Field(..., description="Hostname (e.g., '@', 'www', 'mail')")
+    record_type: str = Field(..., description="Record type (A, AAAA, CNAME, MX, TXT, etc.)")
+    address: str = Field(..., description="Target address/value")
+    ttl: int = Field(default=1800, description="Time to live in seconds")
+    mx_pref: Optional[int] = Field(default=10, description="MX priority (only for MX records)")
+
+    @validator('record_type')
+    def validate_record_type(cls, v):
+        allowed_types = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'SRV', 'CAA']
+        if v.upper() not in allowed_types:
+            raise ValueError(f"Invalid record type. Allowed: {', '.join(allowed_types)}")
+        return v.upper()
+
+
+class DNSRecordResponse(BaseModel):
+    """Response model for a single DNS record."""
+    host_id: Optional[str] = None
+    hostname: str
+    record_type: str
+    address: str
+    ttl: int
+    mx_pref: Optional[int] = None
+    is_active: bool = True
+
+
+class DNSUpdateRequest(BaseModel):
+    """Request to update all DNS records for a domain."""
+    records: List[DNSRecordRequest] = Field(..., description="List of DNS records to set")
+
+
+class URLForwardingRequest(BaseModel):
+    """Request to set up URL forwarding."""
+    target_url: str = Field(..., description="URL to forward to (e.g., https://example.com)")
+    forward_type: str = Field(default="permanent", description="'permanent' (301) or 'temporary' (302)")
+
+    @validator('forward_type')
+    def validate_forward_type(cls, v):
+        if v.lower() not in ['permanent', 'temporary']:
+            raise ValueError("Forward type must be 'permanent' or 'temporary'")
+        return v.lower()
+
+
+class DomainInfoResponse(BaseModel):
+    """Response model for domain information."""
+    domain_name: str
+    owner_name: str
+    is_owner: bool
+    status: str
+    created_date: Optional[datetime] = None
+    expires_date: Optional[datetime] = None
+    is_locked: bool
+    auto_renew: bool
+    whoisguard_enabled: bool
+    is_premium: bool
+    nameservers: List[str]
+
+
+class DomainStatusResponse(BaseModel):
+    """Comprehensive domain status including info and DNS."""
+    domain_info: DomainInfoResponse
+    dns_records: List[DNSRecordResponse]
+    is_hosted: bool
+    is_forwarding: bool
+
+
+class HostingSetupResponse(BaseModel):
+    """Response after setting up hosting."""
+    success: bool
+    message: str
+    dns_records_set: List[DNSRecordResponse]
