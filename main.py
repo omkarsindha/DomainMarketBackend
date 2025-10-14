@@ -8,6 +8,7 @@ from routes.auction_routes import router as auction_router
 from routes.listing_routes import router as listing_router
 from database.connection import engine, Base
 from fastapi.middleware.cors import CORSMiddleware
+from routes.domain_management_routes import router as management_router
 
 app = FastAPI()
 
@@ -26,6 +27,7 @@ app.include_router(domain_router, prefix="/domains", tags=["domains"])
 app.include_router(user_router, prefix="/users", tags=["users"])
 app.include_router(auction_router, prefix="/auctions", tags=["auctions"])
 app.include_router(listing_router, prefix="/listings", tags=["listings"])
+app.include_router(management_router, prefix="/domains", tags=["domain management"])
 
 @app.get("/")
 async def root():
