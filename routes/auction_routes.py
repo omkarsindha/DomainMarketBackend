@@ -104,3 +104,13 @@ def close_auction(
     return auction_service.close_auction(auction_id, username, db)
 
 
+@router.delete("/{auction_id}", response_model=AuctionResponse)
+def cancel_auction(
+    auction_id: int,
+    db: Session = Depends(get_db),
+    username: str = Depends(auth_service.verify_token)
+):
+    """
+    Cancel an active auction. Can only be done by the seller if no bids exist.
+    """
+    return auction_service.cancel_auction(auction_id, username, db)

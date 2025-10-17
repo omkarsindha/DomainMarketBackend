@@ -56,7 +56,7 @@ class AuctionService:
         if not auction:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Auction not found.")
 
-        #validation checks
+        # validation checks
         if auction.status != AuctionStatus.ACTIVE:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This auction is not active.")
 
@@ -97,39 +97,46 @@ class AuctionService:
         return [self._format_auction_response(auc) for auc in auctions]
 
     def close_auction(self, auction_id: int, username: str, db: Session):
-        # 1. Find the auction and the user trying to close it
         auction = db.query(Auction).get(auction_id)
         user = db.query(User).filter(User.username == username).first()
 
         if not auction:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Auction not found.")
 
-        # 2. Only the seller can close the auction
+        # Only the seller can close the auction
         if auction.seller_id != user.id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the seller can close this auction.")
 
         if auction.status != AuctionStatus.ACTIVE:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Auction is not active.")
 
-        # 3. Find the winning bid
+        return self._process_auction_closure(auction, db)
+
+    def _system_close_auction(self, auction_id: int, db: Session):
+        """ Internal method for the system (Celery worker) to close an auction. """
+        auction = db.query(Auction).get(auction_id)
+        if not auction or auction.status != AuctionStatus.ACTIVE:
+            # Auction might have been closed or cancelled by the user in the meantime.
+            return
+
+        return self._process_auction_closure(auction, db)
+
+    def _process_auction_closure(self, auction: Auction, db: Session):
+        """ Core logic to close an auction, find a winner, and process payment. """
         winning_bid = (
             db.query(Bid)
-            .filter(Bid.auction_id == auction_id)
+            .filter(Bid.auction_id == auction.id)
             .order_by(Bid.bid_amount.desc())
             .first()
         )
 
         if winning_bid:
-            # A winner exists, so we process the transfer and transactions
             auction.winner_id = winning_bid.bidder_id
-
-            # --- A. Transfer domain ownership and update its details ---
             domain = db.query(Domain).get(auction.domain_id)
             domain.user_id = winning_bid.bidder_id
             domain.bought_date = datetime.utcnow()
             domain.price = winning_bid.bid_amount
 
-            # --- B. Process payment with Stripe ---
             winner = db.query(User).get(winning_bid.bidder_id)
             if not winner.stripe_customer_id or not winner.stripe_payment_method_id:
                 raise HTTPException(
@@ -139,56 +146,63 @@ class AuctionService:
 
             try:
                 payment_intent = stripe.PaymentIntent.create(
-                    amount=int(winning_bid.bid_amount * 100),  # Stripe expects cents
+                    amount=int(winning_bid.bid_amount * 100),
                     currency="cad",
                     customer=winner.stripe_customer_id,
                     payment_method=winner.stripe_payment_method_id,
-                    off_session=True,  # no user interaction at auction close
+                    off_session=True,
                     confirm=True
                 )
-                payment_status = payment_intent.status  # succeeded, requires_action, etc.
+                payment_status = payment_intent.status
             except stripe.error.CardError as e:
-                # Card declined, insufficient funds, etc.
                 raise HTTPException(
                     status_code=status.HTTP_402_PAYMENT_REQUIRED,
                     detail=f"Payment failed: {e.user_message}"
                 )
 
             payment_service = PaymentService()
-
-            # Transaction for the WINNER (Buyer)
             payment_service.create_transaction(
-                user_id=winning_bid.bidder_id,
-                domain_id=domain.id,
-                auction_id=auction.id,
-                transaction_type=TransactionType.AUCTION_WIN,
-                amount=winning_bid.bid_amount,
+                user_id=winning_bid.bidder_id, domain_id=domain.id, auction_id=auction.id,
+                transaction_type=TransactionType.AUCTION_WIN, amount=winning_bid.bid_amount,
                 description=f"Won auction for domain {domain.domain_name}",
-                domain_name_at_purchase=domain.domain_name,
-                status=payment_status.upper(),
-                db=db
+                domain_name_at_purchase=domain.domain_name, status=payment_status.upper(), db=db
             )
-
-            # Transaction for the SELLER
             payment_service.create_transaction(
-                user_id=auction.seller_id,
-                domain_id=domain.id,
-                auction_id=auction.id,
-                transaction_type=TransactionType.AUCTION_SALE,
-                amount=winning_bid.bid_amount,
+                user_id=auction.seller_id, domain_id=domain.id, auction_id=auction.id,
+                transaction_type=TransactionType.AUCTION_SALE, amount=winning_bid.bid_amount,
                 description=f"Sold domain {domain.domain_name} in auction",
-                domain_name_at_purchase=domain.domain_name,
-                status=payment_status.upper(),
-                db=db
+                domain_name_at_purchase=domain.domain_name, status=payment_status.upper(), db=db
             )
 
-        # 4. Mark the auction as closed
         auction.status = AuctionStatus.CLOSED
-
-        # 5. Commit all changes to the database at once
         db.commit()
         db.refresh(auction)
+        return self._format_auction_response(auction)
 
+    def cancel_auction(self, auction_id: int, username: str, db: Session):
+        """ Cancels an auction. Can only be done by the seller if no bids exist. """
+        auction = db.query(Auction).get(auction_id)
+        user = db.query(User).filter(User.username == username).first()
+
+        if not auction:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Auction not found.")
+
+        if auction.seller_id != user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="Only the seller can cancel this auction.")
+
+        if auction.status != AuctionStatus.ACTIVE:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="Only active auctions can be cancelled.")
+
+        # Business Rule: Prevent cancellation if bids have been placed.
+        if auction.bids:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="Cannot cancel an auction that already has bids.")
+
+        auction.status = AuctionStatus.CANCELLED
+        db.commit()
+        db.refresh(auction)
         return self._format_auction_response(auction)
 
     def _format_auction_response(self, auction: Auction):
@@ -226,9 +240,8 @@ class AuctionService:
         if not bidder_user:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bidder user not found.")
 
-        # Get auction IDs where this user has placed a bid
         bidded_auction_ids = db.query(Bid.auction_id).filter(Bid.bidder_id == bidder_user.id).distinct().all()
-        bidded_auction_ids = [aid[0] for aid in bidded_auction_ids] # Extract IDs from tuples
+        bidded_auction_ids = [aid[0] for aid in bidded_auction_ids]  # Extract IDs from tuples
 
         auctions = db.query(Auction).filter(
             Auction.id.in_(bidded_auction_ids)
