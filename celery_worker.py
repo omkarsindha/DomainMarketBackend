@@ -2,8 +2,9 @@ from celery import Celery
 from celery.schedules import crontab
 from database.connection import SessionLocal
 from services.auction_service import AuctionService
-from models.db_models import Auction, AuctionStatus
+from models.db_models import Auction, AuctionStatus, Domain, Listing, ListingStatus
 from datetime import datetime
+from sqlalchemy.orm import joinedload
 
 # Configure Celery
 celery_app = Celery(
@@ -23,7 +24,6 @@ def check_and_close_expired_auctions():
     try:
         print("Running scheduled task: Checking for expired auctions...")
 
-        # Find all active auctions that have ended
         expired_auctions = db.query(Auction).filter(
             Auction.status == AuctionStatus.ACTIVE,
             Auction.end_time <= datetime.utcnow()
@@ -36,23 +36,76 @@ def check_and_close_expired_auctions():
         for auction in expired_auctions:
             print(f"Closing auction {auction.id} for domain '{auction.domain.domain_name}'...")
             try:
-                # We use the internal closing logic which doesn't require a username
-                # since this is a system-triggered action.
                 auction_service._system_close_auction(auction.id, db)
                 print(f"Successfully closed auction {auction.id}.")
             except Exception as e:
-                # Log the error but continue to the next auction
                 print(f"Error closing auction {auction.id}: {str(e)}")
 
     finally:
         db.close()
 
 
-# Define the schedule for the periodic task
+@celery_app.task
+def check_and_remove_expired_domains():
+    """
+    A periodic task to find expired domains. If an expired domain is part of
+    an active auction/listing, that sale is cancelled, and the domain's user
+    is disassociated (user_id is set to NULL).
+    """
+    db = SessionLocal()
+    try:
+        print("Running scheduled task: Checking for expired domains and associated sales...")
+
+        expired_domains = db.query(Domain).options(
+            joinedload(Domain.auction),
+            joinedload(Domain.listing)
+        ).filter(
+            Domain.expiry_date <= datetime.utcnow(),
+            Domain.user_id != None  # Only process domains that still have an owner
+        ).all()
+
+        if not expired_domains:
+            print("No expired domains found to process.")
+            return
+
+        domains_processed_count = 0
+        for domain in expired_domains:
+            # 1. Check for and cancel any active auction for the expired domain.
+            if domain.auction and domain.auction.status == AuctionStatus.ACTIVE:
+                print(f"Found active auction (ID: {domain.auction.id}) for expired domain '{domain.domain_name}'. Cancelling auction.")
+                domain.auction.status = AuctionStatus.CANCELLED
+
+            # 2. Check for and cancel any active listing for the expired domain.
+            if domain.listing and domain.listing.status == ListingStatus.ACTIVE:
+                print(f"Found active listing (ID: {domain.listing.id}) for expired domain '{domain.domain_name}'. Cancelling listing.")
+                domain.listing.status = ListingStatus.CANCELLED
+
+            # 3. After handling sales, disassociate the user from the domain.
+            print(f"Domain '{domain.domain_name}' (ID: {domain.id}) has expired. Disassociating from user (ID: {domain.user_id}).")
+            domain.user_id = None
+            domains_processed_count += 1
+
+        # 4. Commit all the changes to the database.
+        db.commit()
+        print(f"Successfully processed and made {domains_processed_count} expired domains userless.")
+
+    except Exception as e:
+        print(f"An error occurred while processing expired domains: {str(e)}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+
 celery_app.conf.beat_schedule = {
     'check-expired-auctions-every-minute': {
         'task': 'celery_worker.check_and_close_expired_auctions',
-        'schedule': crontab(),  # This runs the task every minute
+        'schedule': crontab(),  # Runs every minute
+    },
+
+    'check-expired-domains-every-10-minutes': {
+        'task': 'celery_worker.check_and_remove_expired_domains',
+        'schedule': crontab(minute='*/10'), # Runs every 10 minutes
     },
 }
 

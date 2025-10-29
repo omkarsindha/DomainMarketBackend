@@ -195,10 +195,10 @@ class AuctionService:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail="Only active auctions can be cancelled.")
 
-        # Business Rule: Prevent cancellation if bids have been placed.
-        if auction.bids:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                                detail="Cannot cancel an auction that already has bids.")
+        # # Business Rule: Prevent cancellation if bids have been placed.
+        # if auction.bids:
+        #     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+        #                         detail="Cannot cancel an auction that already has bids.")
 
         auction.status = AuctionStatus.CANCELLED
         db.commit()

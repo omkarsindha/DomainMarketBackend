@@ -9,13 +9,13 @@ from services.namecheap_service import NamecheapService
 from models.db_models import Transaction, TransactionType, Domain, User
 from models.api_dto import PaymentRequest
 
+dotenv.load_dotenv()
+stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
 
 class PaymentService:
     def __init__(self):
-        dotenv.load_dotenv()
-        stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
-        self.namecheap = NamecheapService()
 
+        self.namecheap = NamecheapService()
     def purchase_domain(self, payment_details: PaymentRequest, username: str, db: Session):
         """
         Pay for a domain using a saved payment method and register it if payment succeeds.
