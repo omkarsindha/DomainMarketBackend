@@ -56,12 +56,13 @@ def check_and_remove_expired_domains():
     try:
         print("Running scheduled task: Checking for expired domains and associated sales...")
 
+        # Find all expired domains and eagerly load their related auctions and listings.
         expired_domains = db.query(Domain).options(
-            joinedload(Domain.auction),
-            joinedload(Domain.listing)
+            joinedload(Domain.auctions),
+            joinedload(Domain.listings)
         ).filter(
             Domain.expiry_date <= datetime.utcnow(),
-            Domain.user_id != None  # Only process domains that still have an owner
+            Domain.user_id != None
         ).all()
 
         if not expired_domains:
@@ -70,22 +71,24 @@ def check_and_remove_expired_domains():
 
         domains_processed_count = 0
         for domain in expired_domains:
-            # 1. Check for and cancel any active auction for the expired domain.
-            if domain.auction and domain.auction.status == AuctionStatus.ACTIVE:
-                print(f"Found active auction (ID: {domain.auction.id}) for expired domain '{domain.domain_name}'. Cancelling auction.")
-                domain.auction.status = AuctionStatus.CANCELLED
+            # 1. Check for and cancel any active auctions for the expired domain.
+            for auction in domain.auctions:
+                if auction.status == AuctionStatus.ACTIVE:
+                    print(f"Found active auction (ID: {auction.id}) for expired domain '{domain.domain_name}'. Cancelling auction.")
+                    auction.status = AuctionStatus.CANCELLED
 
-            # 2. Check for and cancel any active listing for the expired domain.
-            if domain.listing and domain.listing.status == ListingStatus.ACTIVE:
-                print(f"Found active listing (ID: {domain.listing.id}) for expired domain '{domain.domain_name}'. Cancelling listing.")
-                domain.listing.status = ListingStatus.CANCELLED
+            # 2. Check for and cancel any active listings for the expired domain.
+            for listing in domain.listings:
+                if listing.status == ListingStatus.ACTIVE:
+                    print(f"Found active listing (ID: {listing.id}) for expired domain '{domain.domain_name}'. Cancelling listing.")
+                    listing.status = ListingStatus.CANCELLED
 
             # 3. After handling sales, disassociate the user from the domain.
             print(f"Domain '{domain.domain_name}' (ID: {domain.id}) has expired. Disassociating from user (ID: {domain.user_id}).")
             domain.user_id = None
             domains_processed_count += 1
 
-        # 4. Commit all the changes to the database.
+        # 4. Commit all the changes (status updates and user disassociation) to the database.
         db.commit()
         print(f"Successfully processed and made {domains_processed_count} expired domains userless.")
 
@@ -94,7 +97,6 @@ def check_and_remove_expired_domains():
         db.rollback()
     finally:
         db.close()
-
 
 
 celery_app.conf.beat_schedule = {

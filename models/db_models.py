@@ -48,8 +48,8 @@ class Domain(Base):
 
     # Relationships
     user = relationship("User", back_populates="domains")
-    auction = relationship("Auction", back_populates="domain", uselist=False)
-    listing = relationship("Listing", back_populates="domain", uselist=False)
+    auctions = relationship("Auction", back_populates="domain")
+    listings = relationship("Listing", back_populates="domain")
 
 
 class AuctionStatus(enum.Enum):
@@ -63,7 +63,7 @@ class Auction(Base):
     __tablename__ = "auctions"
 
     id = Column(Integer, primary_key=True, index=True)
-    domain_id = Column(Integer, ForeignKey("domains.id"), unique=True, nullable=False)
+    domain_id = Column(Integer, ForeignKey("domains.id"), nullable=False)
     seller_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     winner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
@@ -72,7 +72,7 @@ class Auction(Base):
     end_time = Column(DateTime, nullable=False)
     status = Column(Enum(AuctionStatus), default=AuctionStatus.ACTIVE)
 
-    domain = relationship("Domain", back_populates="auction")
+    domain = relationship("Domain", back_populates="auctions")
     seller = relationship("User", foreign_keys='Auction.seller_id')
     winner = relationship("User", foreign_keys='Auction.winner_id')
     bids = relationship("Bid", back_populates="auction", cascade="all, delete-orphan", order_by="desc(Bid.bid_amount)")
@@ -102,7 +102,7 @@ class Listing(Base):
     __tablename__ = "listings"
 
     id = Column(Integer, primary_key=True, index=True)
-    domain_id = Column(Integer, ForeignKey("domains.id"), unique=True, nullable=False)
+    domain_id = Column(Integer, ForeignKey("domains.id"), nullable=False)
     seller_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     buyer_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
@@ -111,7 +111,7 @@ class Listing(Base):
     sold_at = Column(DateTime, nullable=True)
     status = Column(Enum(ListingStatus), default=ListingStatus.ACTIVE)
 
-    domain = relationship("Domain", back_populates="listing")
+    domain = relationship("Domain", back_populates="listings")
     seller = relationship("User", foreign_keys='Listing.seller_id')
     buyer = relationship("User", foreign_keys='Listing.buyer_id')
 

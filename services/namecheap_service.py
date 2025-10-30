@@ -162,27 +162,54 @@ class NamecheapService:
         Returns a list of trending keywords for domain names. This list can later be enhanced by fetching from external source
         """
         trending_keywords = [
-            "ai", "crypto", "blockchain", "startup", "web3", "nft", "quantum", "cybersecurity", "greenery",
-            "automation"
+            "ainewbie", "cryptobros", "blockchainbros", "startupfounders", "web3flukes", "nftbrokers", "quantumcomputingxyz", "cybersecuritygrumps", "greenerygods",
+            "automation-automators"
         ]
         return trending_keywords
 
     def get_trending_available_domains(self):
         """
         Finds trending available domains by checking domain availability for trending keywords.
+        This now uses the same reliable XML parsing as the main search function.
         """
         trending_keywords = self.get_trending_keywords()
         available_domains = []
-        for keyword in trending_keywords:
-            domain_name = f"{keyword}.com"
-            url_availability = self._build_api_url("namecheap.domains.check", DomainList=domain_name)
-            response_availability = self._make_api_request(url_availability)
-            print(response_availability.text)
-            if response_availability.status_code == 200 and "Available" in response_availability.text:
-                domain_price = self.get_tld_price("com")
-                available_domains.append({"domain": domain_name, "price": domain_price})
 
-        return available_domains
+        # 1. BATCHING: Combine all keywords into a single API call, just like the search.
+        domain_names_to_check = [f"{keyword}.com" for keyword in trending_keywords]
+        domain_list_str = ",".join(domain_names_to_check)
+
+        url_availability = self._build_api_url("namecheap.domains.check", DomainList=domain_list_str)
+
+        try:
+            response_availability = self._make_api_request(url_availability)
+            if response_availability.status_code != 200:
+                print("Failed to get a valid response from Namecheap API.")
+                return []  # Return empty if the API call failed
+
+            # 2. PARSING XML: Use ElementTree to parse the response
+            root = ET.fromstring(response_availability.text)
+            namespace = {'ns': 'http://api.namecheap.com/xml.response'}
+
+            for result in root.findall('.//ns:DomainCheckResult', namespace):
+                # The critical check, identical to the logic in _check_domain_batch
+                if result.get('Available').lower() == 'true':
+                    domain_name = result.get('Domain')
+                    price_info = self.get_tld_price("com")
+
+                    if isinstance(price_info, dict) and "price" in price_info:
+                        available_domains.append({
+                            "domain": domain_name,
+                            "price": price_info["price"]
+                        })
+            return available_domains
+
+        except ET.ParseError as e:
+            print(f"Error parsing XML from Namecheap: {e}")
+            return []
+        except Exception as e:
+            print(f"An unexpected error occurred in get_trending_available_domains: {e}")
+            return []
 
     def register_domain(self, domain: str, years: int, price, username, db):
         """
