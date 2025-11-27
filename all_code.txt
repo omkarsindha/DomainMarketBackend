@@ -1,0 +1,2921 @@
+===== celery_worker.py =====
+from celery import Celery
+from celery.schedules import crontab
+from database.connection import SessionLocal
+from services.auction_service import AuctionService
+from models.db_models import Auction, AuctionStatus, Domain, Listing, ListingStatus
+from datetime import datetime
+from sqlalchemy.orm import joinedload
+
+# Configure Celery
+celery_app = Celery(
+    "tasks",
+    broker="redis://localhost:6379/0",
+    backend="redis://localhost:6379/0"
+)
+
+
+@celery_app.task
+def check_and_close_expired_auctions():
+    """
+    A periodic task to find and close auctions whose end_time has passed.
+    """
+    db = SessionLocal()
+    auction_service = AuctionService()
+    try:
+        print("Running scheduled task: Checking for expired auctions...")
+
+        expired_auctions = db.query(Auction).filter(
+            Auction.status == AuctionStatus.ACTIVE,
+            Auction.end_time <= datetime.utcnow()
+        ).all()
+
+        if not expired_auctions:
+            print("No expired auctions found.")
+            return
+
+        for auction in expired_auctions:
+            print(f"Closing auction {auction.id} for domain '{auction.domain.domain_name}'...")
+            try:
+                auction_service._system_close_auction(auction.id, db)
+                print(f"Successfully closed auction {auction.id}.")
+            except Exception as e:
+                print(f"Error closing auction {auction.id}: {str(e)}")
+
+    finally:
+        db.close()
+
+
+@celery_app.task
+def check_and_remove_expired_domains():
+    """
+    A periodic task to find expired domains. If an expired domain is part of
+    an active auction/listing, that sale is cancelled, and the domain's user
+    is disassociated (user_id is set to NULL).
+    """
+    db = SessionLocal()
+    try:
+        print("Running scheduled task: Checking for expired domains and associated sales...")
+
+        # Find all expired domains and eagerly load their related auctions and listings.
+        expired_domains = db.query(Domain).options(
+            joinedload(Domain.auctions),
+            joinedload(Domain.listings)
+        ).filter(
+            Domain.expiry_date <= datetime.utcnow(),
+            Domain.user_id != None
+        ).all()
+
+        if not expired_domains:
+            print("No expired domains found to process.")
+            return
+
+        domains_processed_count = 0
+        for domain in expired_domains:
+            # 1. Check for and cancel any active auctions for the expired domain.
+            for auction in domain.auctions:
+                if auction.status == AuctionStatus.ACTIVE:
+                    print(f"Found active auction (ID: {auction.id}) for expired domain '{domain.domain_name}'. Cancelling auction.")
+                    auction.status = AuctionStatus.CANCELLED
+
+            # 2. Check for and cancel any active listings for the expired domain.
+            for listing in domain.listings:
+                if listing.status == ListingStatus.ACTIVE:
+                    print(f"Found active listing (ID: {listing.id}) for expired domain '{domain.domain_name}'. Cancelling listing.")
+                    listing.status = ListingStatus.CANCELLED
+
+            # 3. After handling sales, disassociate the user from the domain.
+            print(f"Domain '{domain.domain_name}' (ID: {domain.id}) has expired. Disassociating from user (ID: {domain.user_id}).")
+            domain.user_id = None
+            domains_processed_count += 1
+
+        # 4. Commit all the changes (status updates and user disassociation) to the database.
+        db.commit()
+        print(f"Successfully processed and made {domains_processed_count} expired domains userless.")
+
+    except Exception as e:
+        print(f"An error occurred while processing expired domains: {str(e)}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+celery_app.conf.beat_schedule = {
+    'check-expired-auctions-every-minute': {
+        'task': 'celery_worker.check_and_close_expired_auctions',
+        'schedule': crontab(),  # Runs every minute
+    },
+
+    'check-expired-domains-every-10-minutes': {
+        'task': 'celery_worker.check_and_remove_expired_domains',
+        'schedule': crontab(minute='*/10'), # Runs every 10 minutes
+    },
+}
+
+celery_app.conf.timezone = 'UTC'
+
+===== main.py =====
+import uvicorn
+from fastapi import FastAPI
+from services.namecheap_service import NamecheapService
+from routes.domain_routes import router as domain_router
+from routes.auth_routes import router as auth_router
+from routes.user_routes import router as user_router
+from routes.auction_routes import router as auction_router
+from routes.listing_routes import router as listing_router
+from database.connection import engine, Base
+from fastapi.middleware.cors import CORSMiddleware
+from routes.domain_management_routes import router as management_router
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+Base.metadata.create_all(bind=engine)
+
+app.include_router(auth_router, prefix="/auth", tags=["auth"])
+app.include_router(domain_router, prefix="/domains", tags=["domains"])
+app.include_router(user_router, prefix="/users", tags=["users"])
+app.include_router(auction_router, prefix="/auctions", tags=["auctions"])
+app.include_router(listing_router, prefix="/listings", tags=["listings"])
+app.include_router(management_router, prefix="/domains", tags=["domain management"])
+
+@app.get("/")
+async def root():
+    return {"message": "Hello World"}
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+===== t.py =====
+import os
+
+output_file = "all_code.txt"
+
+with open(output_file, "w", encoding="utf-8") as out:
+    for root, dirs, files in os.walk("."):
+        # prevent descending into .venv and tests
+        if ".venv" in dirs:
+            dirs.remove(".venv")
+        if "tests" in dirs:
+            dirs.remove("tests")
+
+        # sort for consistent output
+        dirs.sort()
+        files.sort()
+
+        for file in files:
+            if file.endswith(".py"):
+                filepath = os.path.join(root, file)
+                relpath = os.path.relpath(filepath, ".")  # relative path
+                out.write(f"===== {relpath} =====\n")
+                with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                    out.write(f.read())
+                    out.write("\n\n")
+
+===== database\__init__.py =====
+
+
+===== database\connection.py =====
+from sqlalchemy import create_engine, Column, Integer, String
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+
+DATABASE_URL = "postgresql://postgres:1234@localhost/DomainMarkets"
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+Base = declarative_base()
+
+def get_db():
+    from models.db_models import User, UserDetails, Domain
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+Base.metadata.create_all(bind=engine)
+
+===== database\database.py =====
+import psycopg2
+import psycopg2.extras  # Import extras
+from dotenv import load_dotenv
+import os
+
+# Load environment variables from .env
+load_dotenv()
+
+# Fetch variables
+USER = os.getenv("user")
+PASSWORD = os.getenv("password")
+HOST = os.getenv("host")
+PORT = os.getenv("port")
+DBNAME = os.getenv("dbname")
+
+# Connect to the database
+try:
+    connection = psycopg2.connect(
+        user=USER,
+        password=PASSWORD,
+        host=HOST,
+        port=PORT,
+        dbname=DBNAME
+    )
+    print("Connection successful!")
+
+    # Create a cursor with DictCursor
+    cursor = connection.cursor(cursor_factory=psycopg2.extras.DictCursor)
+
+    # Fetch and print users
+    cursor.execute('SELECT * FROM users;')
+    for record in cursor.fetchall():
+        print(record['name'], record['role'])  # Now this will work!
+
+except Exception as e:
+    print(f"Failed to connect: {e}")
+
+finally:
+    if connection:
+        cursor.close()
+        connection.close()
+
+
+===== models\__init__.py =====
+
+
+===== models\api_dto.py =====
+from pydantic import BaseModel, Field, validator
+from typing import List, Optional
+from datetime import datetime
+from decimal import Decimal
+
+
+
+class DomainRegisterUserDetails(BaseModel):
+    phone_number: str
+    first_name: str
+    last_name: str
+    address: str
+    city: str
+    state: str
+    zip_code: str
+    country: str
+
+class DomainRegistrationRequest(BaseModel):
+    domain: str
+    years: int = 1
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class RegisterRequest(BaseModel):
+    username: str
+    email: str
+    password: str
+
+class DomainsCheckRequest(BaseModel):
+    domain: str
+
+class PaymentRequest(BaseModel):
+    domain: str
+    price: float
+    years: int = 1
+
+
+class AuctionCreateRequest(BaseModel):
+    domain_name: str
+    start_price: float = Field(..., gt=0, description="The starting price for the auction.")
+    duration_days: int = Field(..., gt=0, le=30, description="The duration of the auction in days.")
+
+class BidCreateRequest(BaseModel):
+    amount: float = Field(..., gt=0, description="The amount to bid.")
+
+class BidResponse(BaseModel):
+    bidder_username: str
+    bid_amount: float
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+class AuctionResponse(BaseModel):
+    id: int
+    domain_name: str
+    seller_username: str
+    start_price: float
+    current_highest_bid: Optional[float] = 0.0
+    end_time: datetime
+    status: str
+    bids: List[BidResponse] = []
+    winner_username: Optional[str] = None
+
+    class Config:
+        orm_mode = True
+
+
+class ListingCreateRequest(BaseModel):
+    domain_name: str
+    price: float = Field(..., gt=0, description="The fixed price for the domain.")
+
+
+class ListingResponse(BaseModel):
+    id: int
+    domain_name: str
+    seller_username: str
+    price: float
+    created_at: datetime
+    sold_at: Optional[datetime] = None
+    status: str
+    buyer_username: Optional[str] = None
+
+    class Config:
+        orm_mode = True
+
+
+class SavePaymentRequest(BaseModel):
+    username: str
+    payment_method_id: str
+
+class UserDomainResponse(BaseModel):
+    id: int
+    domain_name: str
+    price: Decimal
+    bought_date: datetime
+    expiry_date: datetime
+    is_auctioned: bool
+    is_listed: bool
+class Config:
+        orm_mode = True
+
+class UserTransactionResponse(BaseModel):
+    id: int
+    transaction_type: str
+    amount: Decimal
+    currency: str
+    transaction_date: datetime
+    status: str
+    description: Optional[str] = None
+    domain_name_at_purchase: Optional[str] = None
+    years_purchased: Optional[int] = None
+
+    class Config:
+        orm_mode = True
+
+class UserMyDetailsResponse(BaseModel):
+    username: str
+    email: str
+
+    class Config:
+        from_attributes = True
+
+#For domain management
+
+class DNSRecordRequest(BaseModel):
+    """Request model for a single DNS record."""
+    hostname: str = Field(..., description="Hostname (e.g., '@', 'www', 'mail')")
+    record_type: str = Field(..., description="Record type (A, AAAA, CNAME, MX, TXT, etc.)")
+    address: str = Field(..., description="Target address/value")
+    ttl: int = Field(default=1800, description="Time to live in seconds")
+    mx_pref: Optional[int] = Field(default=10, description="MX priority (only for MX records)")
+
+    @validator('record_type')
+    def validate_record_type(cls, v):
+        allowed_types = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'SRV', 'CAA']
+        if v.upper() not in allowed_types:
+            raise ValueError(f"Invalid record type. Allowed: {', '.join(allowed_types)}")
+        return v.upper()
+
+
+class DNSRecordResponse(BaseModel):
+    """Response model for a single DNS record."""
+    host_id: Optional[str] = None
+    hostname: str
+    record_type: str
+    address: str
+    ttl: int
+    mx_pref: Optional[int] = None
+    is_active: bool = True
+
+
+class DNSUpdateRequest(BaseModel):
+    """Request to update all DNS records for a domain."""
+    records: List[DNSRecordRequest] = Field(..., description="List of DNS records to set")
+
+
+class URLForwardingRequest(BaseModel):
+    """Request to set up URL forwarding."""
+    target_url: str = Field(..., description="URL to forward to (e.g., https://example.com)")
+    forward_type: str = Field(default="permanent", description="'permanent' (301) or 'temporary' (302)")
+
+    @validator('forward_type')
+    def validate_forward_type(cls, v):
+        if v.lower() not in ['permanent', 'temporary']:
+            raise ValueError("Forward type must be 'permanent' or 'temporary'")
+        return v.lower()
+
+
+class DomainInfoResponse(BaseModel):
+    """Response model for domain information."""
+    domain_name: str
+    owner_name: str
+    is_owner: bool
+    status: str
+    created_date: Optional[datetime] = None
+    expires_date: Optional[datetime] = None
+    is_locked: bool
+    auto_renew: bool
+    whoisguard_enabled: bool
+    is_premium: bool
+    nameservers: List[str]
+
+
+class DomainStatusResponse(BaseModel):
+    """Comprehensive domain status including info and DNS."""
+    domain_info: DomainInfoResponse
+    dns_records: List[DNSRecordResponse]
+    is_hosted: bool
+    is_forwarding: bool
+
+
+class HostingSetupResponse(BaseModel):
+    """Response after setting up hosting."""
+    success: bool
+    message: str
+    dns_records_set: List[DNSRecordResponse]
+
+===== models\db_models.py =====
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Numeric, Enum
+from sqlalchemy.orm import relationship
+from database.connection import Base
+from datetime import datetime
+import enum
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True)
+    email = Column(String, nullable=False)
+    password_hash = Column(String)
+    stripe_customer_id = Column(String, nullable=True)
+    stripe_payment_method_id = Column(String, nullable=True)
+
+    # Relationships
+    details = relationship("UserDetails", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    domains = relationship("Domain", back_populates="user")
+
+class UserDetails(Base):
+    __tablename__ = "user_details"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), unique=True)
+    email = Column(String, nullable=False)
+    phone_number = Column(String, nullable=True)
+    first_name = Column(String, nullable=True)
+    last_name = Column(String, nullable=True)
+    address = Column(String, nullable=True)
+    city = Column(String, nullable=True)
+    state = Column(String, nullable=True)
+    zip_code = Column(String, nullable=True)
+    country = Column(String, nullable=True)
+
+    # Relationship with User
+    user = relationship("User", back_populates="details")
+
+class Domain(Base):
+    __tablename__ = "domains"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    domain_name = Column(String, unique=True, index=True)
+    price = Column(Numeric(10, 2), nullable=False)
+    bought_date = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expiry_date = Column(DateTime, nullable=False)
+
+    # Relationships
+    user = relationship("User", back_populates="domains")
+    auctions = relationship("Auction", back_populates="domain")
+    listings = relationship("Listing", back_populates="domain")
+
+
+class AuctionStatus(enum.Enum):
+    PENDING = "PENDING"
+    ACTIVE = "ACTIVE"
+    CLOSED = "CLOSED"
+    CANCELLED = "CANCELLED"
+
+
+class Auction(Base):
+    __tablename__ = "auctions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    domain_id = Column(Integer, ForeignKey("domains.id"), nullable=False)
+    seller_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    winner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    start_price = Column(Numeric(10, 2), nullable=False)
+    start_time = Column(DateTime, default=datetime.utcnow)
+    end_time = Column(DateTime, nullable=False)
+    status = Column(Enum(AuctionStatus), default=AuctionStatus.ACTIVE)
+
+    domain = relationship("Domain", back_populates="auctions")
+    seller = relationship("User", foreign_keys='Auction.seller_id')
+    winner = relationship("User", foreign_keys='Auction.winner_id')
+    bids = relationship("Bid", back_populates="auction", cascade="all, delete-orphan", order_by="desc(Bid.bid_amount)")
+
+
+class Bid(Base):
+    __tablename__ = "bids"
+
+    id = Column(Integer, primary_key=True, index=True)
+    auction_id = Column(Integer, ForeignKey("auctions.id"), nullable=False)
+    bidder_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    bid_amount = Column(Numeric(10, 2), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    auction = relationship("Auction", back_populates="bids")
+    bidder = relationship("User")
+
+
+class ListingStatus(enum.Enum):
+    ACTIVE = "ACTIVE"
+    SOLD = "SOLD"
+    CANCELLED = "CANCELLED"
+
+
+class Listing(Base):
+    __tablename__ = "listings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    domain_id = Column(Integer, ForeignKey("domains.id"), nullable=False)
+    seller_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    buyer_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    price = Column(Numeric(10, 2), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    sold_at = Column(DateTime, nullable=True)
+    status = Column(Enum(ListingStatus), default=ListingStatus.ACTIVE)
+
+    domain = relationship("Domain", back_populates="listings")
+    seller = relationship("User", foreign_keys='Listing.seller_id')
+    buyer = relationship("User", foreign_keys='Listing.buyer_id')
+
+
+class TransactionType(enum.Enum):
+    DOMAIN_REGISTRATION = "DOMAIN_REGISTRATION"
+    DOMAIN_RENEWAL = "DOMAIN_RENEWAL"
+    DOMAIN_TRANSFER = "DOMAIN_TRANSFER"
+    AUCTION_WIN = "AUCTION_WIN"
+    AUCTION_SALE = "AUCTION_SALE"
+    LISTING_PURCHASE = "LISTING_PURCHASE"
+    LISTING_SALE = "LISTING_SALE"
+
+
+class Transaction(Base):
+    __tablename__ = "transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    domain_id = Column(Integer, ForeignKey("domains.id"), nullable=True)
+    auction_id = Column(Integer, ForeignKey("auctions.id"), nullable=True)
+    listing_id = Column(Integer, ForeignKey("listings.id"), nullable=True)
+
+    transaction_type = Column(Enum(TransactionType), nullable=False)
+    amount = Column(Numeric(10, 2), nullable=False)
+    currency = Column(String, default="CAD")
+    transaction_date = Column(DateTime, default=datetime.utcnow)
+    status = Column(String, default="COMPLETED")
+    description = Column(String, nullable=True)
+
+    domain_name_at_purchase = Column(String, nullable=True)
+    years_purchased = Column(Integer, nullable=True)
+
+    user = relationship("User", backref="transactions")
+    domain = relationship("Domain", backref="transactions")
+    auction = relationship("Auction", backref="transactions")
+    listing = relationship("Listing", backref="transactions")
+
+===== routes\__init__.py =====
+
+
+===== routes\auction_routes.py =====
+from fastapi import APIRouter, Depends, status
+from sqlalchemy.orm import Session
+from typing import List
+
+from stripe import PaymentMethodService
+
+from database.connection import get_db
+from services.auth_service import AuthService
+from services.auction_service import AuctionService
+from models.api_dto import AuctionCreateRequest, BidCreateRequest, AuctionResponse
+from services.payment_service import PaymentService
+
+router = APIRouter()
+auth_service = AuthService()
+auction_service = AuctionService()
+payment_method_service = PaymentService()
+
+@router.post("/", status_code=status.HTTP_201_CREATED, response_model=AuctionResponse)
+def create_auction(
+    request: AuctionCreateRequest,
+    db: Session = Depends(get_db),
+    username: str = Depends(auth_service.verify_token)
+):
+    """
+    Create a new auction for a domain owned by the authenticated user.
+    """
+    auction = auction_service.create_auction(request, username, db)
+    return auction_service._format_auction_response(auction)
+
+
+@router.get("/my-selling-auctions", response_model=List[AuctionResponse])
+def get_my_selling_auctions(
+    db: Session = Depends(get_db),
+    username: str = Depends(auth_service.verify_token)
+):
+    """
+    Get a list of auctions where the authenticated user is the seller.
+    """
+    return auction_service.get_auctions_by_seller(username, db)
+
+@router.get("/my-bidding-auctions", response_model=List[AuctionResponse])
+def get_my_bidding_auctions(
+    db: Session = Depends(get_db),
+    username: str = Depends(auth_service.verify_token)
+):
+    """
+    Get a list of auctions where the authenticated user has placed a bid.
+    """
+    return auction_service.get_auctions_by_bidder(username, db)
+
+@router.get("/my-won-auctions", response_model=List[AuctionResponse])
+def get_my_won_auctions(
+    db: Session = Depends(get_db),
+    username: str = Depends(auth_service.verify_token)
+):
+    """
+    Get a list of auctions won by the authenticated user.
+    """
+    return auction_service.get_auctions_won_by_user(username, db)
+
+@router.get("/", response_model=List[AuctionResponse])
+def get_active_auctions(db: Session = Depends(get_db)):
+    """
+    Get a list of all currently active auctions.
+    """
+    return auction_service.get_active_auctions(db)
+
+
+@router.get("/{auction_id}", response_model=AuctionResponse)
+def get_auction_details(
+    auction_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Get detailed information about a single auction, including all bids.
+    """
+    return auction_service.get_auction_details(auction_id, db)
+
+
+@router.post("/{auction_id}/bids", response_model=AuctionResponse)
+def place_bid(
+    auction_id: int,
+    request: BidCreateRequest,
+    db: Session = Depends(get_db),
+    username: str = Depends(auth_service.verify_token)
+):
+    """
+    Place a bid on an active auction.
+    """
+    auction = auction_service.place_bid(auction_id, request, username, db)
+    return auction_service._format_auction_response(auction)
+
+
+@router.post("/{auction_id}/close", response_model=AuctionResponse)
+def close_auction(
+    auction_id: int,
+    db: Session = Depends(get_db),
+    username: str = Depends(auth_service.verify_token)
+):
+    """
+    Close an auction. Can only be done by the seller.
+    This will determine the winner and transfer the domain.
+    """
+    return auction_service.close_auction(auction_id, username, db)
+
+
+@router.delete("/{auction_id}", response_model=AuctionResponse)
+def cancel_auction(
+    auction_id: int,
+    db: Session = Depends(get_db),
+    username: str = Depends(auth_service.verify_token)
+):
+    """
+    Cancel an active auction. Can only be done by the seller if no bids exist.
+    """
+    return auction_service.cancel_auction(auction_id, username, db)
+
+===== routes\auth_routes.py =====
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from services.auth_service import AuthService
+from services.database_service import DatabaseService
+from database.connection import get_db
+from models.api_dto import RegisterRequest
+from models.api_dto import LoginRequest
+
+router = APIRouter()
+auth_service = AuthService()
+
+
+@router.post("/register")
+def register(request: RegisterRequest, db: Session = Depends(get_db)):
+    user = auth_service.create_user(request.username, request.email, request.password, db)
+    return {"message": "User registered successfully", "user": user.username}
+
+
+@router.post("/login")
+def login(request: LoginRequest, db: Session = Depends(get_db)):
+    user = auth_service.authenticate_user(request.username, request.password, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    token = auth_service.create_access_token(user.username)
+    return {"access_token": token, "token_type": "bearer"}
+
+
+===== routes\domain_management_routes.py =====
+from fastapi import APIRouter, Depends, HTTPException, Path, status
+from sqlalchemy.orm import Session
+from typing import List
+
+from database.connection import get_db
+from services.auth_service import AuthService
+from services.database_service import DatabaseService
+from services.namecheap_management_service import NamecheapManagementService
+from models.api_dto import (
+    DomainInfoResponse,
+    DNSRecordResponse,
+    DNSUpdateRequest,
+    URLForwardingRequest,
+    DomainStatusResponse,
+    HostingSetupResponse
+)
+from models.db_models import Domain, User
+
+router = APIRouter()
+auth_service = AuthService()
+database_service = DatabaseService()
+management_service = NamecheapManagementService()
+
+
+def verify_domain_ownership(sld: str, tld: str, username: str, db: Session):
+    """
+    Helper function to verify that the authenticated user owns the domain.
+
+    Args:
+        sld: Second-level domain (e.g., 'example' in example.com)
+        tld: Top-level domain (e.g., 'com' in example.com)
+        username: Username from JWT token
+        db: Database session
+
+    Raises:
+        HTTPException: If domain not found or user doesn't own it
+    """
+    domain_name = f"{sld}.{tld}"
+
+    # Get the user
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    # Check if domain exists and belongs to user
+    domain = db.query(Domain).filter(
+        Domain.domain_name == domain_name,
+        Domain.user_id == user.id
+    ).first()
+
+    if not domain:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not own this domain or it does not exist in your account"
+        )
+
+    return domain
+
+
+@router.get("/manage/{sld}/{tld}/info", response_model=DomainInfoResponse)
+def get_domain_info(
+        sld: str = Path(..., description="Second-level domain (e.g., 'example' in example.com)"),
+        tld: str = Path(..., description="Top-level domain (e.g., 'com' in example.com)"),
+        username: str = Depends(auth_service.verify_token),
+        db: Session = Depends(get_db)
+):
+    """
+    Get comprehensive information about a domain.
+
+    Returns domain details including:
+    - Owner information
+    - Registration and expiration dates
+    - Lock status
+    - Auto-renew status
+    - WhoisGuard status
+    - Nameservers
+    """
+    # Verify ownership
+    verify_domain_ownership(sld, tld, username, db)
+
+    # Get domain info from Namecheap
+    return management_service.get_domain_info(sld, tld, username)
+
+
+@router.get("/manage/{sld}/{tld}/dns", response_model=List[DNSRecordResponse])
+def get_dns_records(
+        sld: str = Path(..., description="Second-level domain"),
+        tld: str = Path(..., description="Top-level domain"),
+        username: str = Depends(auth_service.verify_token),
+        db: Session = Depends(get_db)
+):
+    """
+    Get all DNS records for a domain.
+
+    Returns a list of DNS records including:
+    - A, AAAA, CNAME, MX, TXT, NS records
+    - Hostnames and addresses
+    - TTL values
+    - MX priorities (for MX records)
+    """
+    # Verify ownership
+    verify_domain_ownership(sld, tld, username, db)
+
+    # Get DNS records from Namecheap
+    return management_service.get_dns_records(sld, tld)
+
+
+@router.post("/manage/{sld}/{tld}/dns/update", response_model=List[DNSRecordResponse])
+def update_dns_records(
+        request: DNSUpdateRequest,
+        sld: str = Path(..., description="Second-level domain"),
+        tld: str = Path(..., description="Top-level domain"),
+        username: str = Depends(auth_service.verify_token),
+        db: Session = Depends(get_db)
+):
+    """
+    Update DNS records for a domain.
+
+    **WARNING:** This replaces ALL existing DNS records with the provided ones.
+    Make sure to include all records you want to keep.
+
+    Request body should contain a list of DNS records with:
+    - hostname: The subdomain (use '@' for root domain, 'www' for www subdomain)
+    - record_type: A, AAAA, CNAME, MX, TXT, NS, SRV, or CAA
+    - address: Target IP address or hostname
+    - ttl: Time to live (default: 1800 seconds)
+    - mx_pref: Priority for MX records (default: 10)
+
+    Example:
+    ```json
+    {
+      "records": [
+        {
+          "hostname": "@",
+          "record_type": "A",
+          "address": "192.168.1.1",
+          "ttl": 1800
+        },
+        {
+          "hostname": "www",
+          "record_type": "CNAME",
+          "address": "example.com.",
+          "ttl": 1800
+        }
+      ]
+    }
+    ```
+    """
+    # Verify ownership
+    verify_domain_ownership(sld, tld, username, db)
+
+    # Update DNS records
+    return management_service.update_dns_records(sld, tld, request.records)
+
+
+@router.post("/manage/{sld}/{tld}/forward")
+def set_url_forwarding(
+        request: URLForwardingRequest,
+        sld: str = Path(..., description="Second-level domain"),
+        tld: str = Path(..., description="Top-level domain"),
+        username: str = Depends(auth_service.verify_token),
+        db: Session = Depends(get_db)
+):
+    """
+    Set up URL forwarding for a domain.
+
+    This will redirect visitors from your domain to another URL.
+
+    Request body:
+    - target_url: The URL to forward to (e.g., "https://example.com")
+    - forward_type: Either "permanent" (301 redirect) or "temporary" (302 redirect)
+
+    Example:
+    ```json
+    {
+      "target_url": "https://myothersite.com",
+      "forward_type": "permanent"
+    }
+    ```
+    """
+    # Verify ownership
+    verify_domain_ownership(sld, tld, username, db)
+
+    # Set URL forwarding
+    return management_service.set_url_forwarding(
+        sld, tld, request.target_url, request.forward_type
+    )
+
+
+@router.post("/manage/{sld}/{tld}/host", response_model=HostingSetupResponse)
+def setup_hosting(
+        sld: str = Path(..., description="Second-level domain"),
+        tld: str = Path(..., description="Top-level domain"),
+        custom_ip: str = None,
+        username: str = Depends(auth_service.verify_token),
+        db: Session = Depends(get_db)
+):
+    """
+    Set up basic hosting for a domain.
+
+    This will automatically configure:
+    - A record for root domain (@) pointing to your server IP
+    - CNAME record for www subdomain pointing to root domain
+
+    Query parameters:
+    - custom_ip (optional): Custom IP address to use instead of default
+
+    The default hosting IP is configured in the .env file (DEFAULT_HOSTING_IP).
+
+    Example request:
+    ```
+    POST /domains/manage/example/com/host?custom_ip=34.56.78.90
+    ```
+    """
+    # Verify ownership
+    verify_domain_ownership(sld, tld, username, db)
+
+    # Set up hosting
+    result = management_service.set_hosting(sld, tld, custom_ip)
+
+    return HostingSetupResponse(
+        success=result["success"],
+        message=result["message"],
+        dns_records_set=result["dns_records_set"]
+    )
+
+
+@router.get("/manage/{sld}/{tld}/status", response_model=DomainStatusResponse)
+def get_domain_status(
+        sld: str = Path(..., description="Second-level domain"),
+        tld: str = Path(..., description="Top-level domain"),
+        username: str = Depends(auth_service.verify_token),
+        db: Session = Depends(get_db)
+):
+    """
+    Get comprehensive status of a domain.
+
+    This endpoint combines information from multiple sources to provide:
+    - Complete domain information (registration dates, lock status, etc.)
+    - All DNS records
+    - Hosting status (whether domain is hosted)
+    - Forwarding status (whether domain is forwarding)
+
+    This is useful for displaying a complete dashboard view of the domain.
+    """
+    # Verify ownership
+    verify_domain_ownership(sld, tld, username, db)
+
+    # Get comprehensive status
+    return management_service.get_domain_status(sld, tld, username)
+
+
+@router.get("/manage/my-domains")
+def list_my_manageable_domains(
+        username: str = Depends(auth_service.verify_token),
+        db: Session = Depends(get_db)
+):
+    """
+    Get a list of all domains owned by the authenticated user.
+
+    This is a convenience endpoint that returns domains in a format
+    ready for the management dashboard, including parsed SLD and TLD.
+
+    Returns:
+    ```json
+    {
+      "domains": [
+        {
+          "domain_name": "example.com",
+          "sld": "example",
+          "tld": "com",
+          "expiry_date": "2025-12-31T00:00:00",
+          "management_url": "/domains/manage/example/com/status"
+        }
+      ]
+    }
+    ```
+    """
+    domains = database_service.get_user_domains(username, db)
+
+    manageable_domains = []
+    for domain in domains:
+        # Parse domain name into SLD and TLD
+        parts = domain.domain_name.split('.')
+        if len(parts) >= 2:
+            sld = '.'.join(parts[:-1])  # Everything before last dot
+            tld = parts[-1]  # Last part
+
+            manageable_domains.append({
+                "domain_name": domain.domain_name,
+                "sld": sld,
+                "tld": tld,
+                "expiry_date": domain.expiry_date,
+                "management_url": f"/domains/manage/{sld}/{tld}/status"
+            })
+
+    return {"domains": manageable_domains}
+
+===== routes\domain_routes.py =====
+from fastapi import APIRouter, Query, Depends, HTTPException
+from typing import List
+from database.connection import get_db
+from sqlalchemy.orm import Session
+from models.api_dto import PaymentRequest, UserDomainResponse
+from services import payment_service
+from services.namecheap_service import NamecheapService
+from services.auth_service import AuthService
+from services.database_service import DatabaseService
+
+router = APIRouter()
+namecheap = NamecheapService()
+payment = payment_service.PaymentService()
+auth_service = AuthService()
+database_service = DatabaseService()
+
+@router.get("/check")
+def check_domain(domain: str = Query(...), username: str = Depends(auth_service.verify_token)):
+    """Check availability of a single domain."""
+    if not domain:
+        return {"error": "No domain provided"}
+    return namecheap.check_domain_availability(domain)
+
+@router.get("/trending-domains")
+def trending_domains(username: str = Depends(auth_service.verify_token)):
+    """Gets the trending domains"""
+    return namecheap.get_trending_available_domains()
+
+@router.get("/trending-tlds")
+def get_trending_tlds(username: str = Depends(auth_service.verify_token)):
+    """Get trending TLDs."""
+    return namecheap.get_trending_tlds()
+
+@router.post("/purchase-domain")
+def purchase_domain(
+    payment_details: PaymentRequest,
+    username: str = Depends(auth_service.verify_token),
+    db: Session = Depends(get_db),
+):
+    return payment.purchase_domain(payment_details, username, db)
+
+# @router.post("/register")
+# def register_domain(domain: str = Query(...),years: int = Query(...),
+#                     username: str = Depends(auth_service.verify_token), db: Session = Depends(get_db)):
+#     """Register a domain using Namecheap for the authenticated user."""
+#     return namecheap.register_domain(domain, years, username, db)
+
+
+
+
+
+
+
+===== routes\listing_routes.py =====
+from fastapi import APIRouter, Depends, status
+from sqlalchemy.orm import Session
+from typing import List
+
+from database.connection import get_db
+from services.auth_service import AuthService
+from services.listing_service import ListingService
+from models.api_dto import ListingCreateRequest, ListingResponse
+
+router = APIRouter()
+auth_service = AuthService()
+listing_service = ListingService()
+
+
+@router.post("/", status_code=status.HTTP_201_CREATED, response_model=ListingResponse)
+def create_listing(
+    request: ListingCreateRequest,
+    db: Session = Depends(get_db),
+    username: str = Depends(auth_service.verify_token)
+):
+    """
+    Create a new fixed-price listing for a domain owned by the authenticated user.
+    """
+    listing = listing_service.create_listing(request, username, db)
+    return listing_service._format_listing_response(listing)
+
+
+@router.get("/", response_model=List[ListingResponse])
+def get_active_listings(db: Session = Depends(get_db)):
+    """
+    Get a list of all currently active listings.
+    """
+    return listing_service.get_active_listings(db)
+
+
+@router.get("/my-listings", response_model=List[ListingResponse])
+def get_my_listings(
+    db: Session = Depends(get_db),
+    username: str = Depends(auth_service.verify_token)
+):
+    """
+    Get a list of all listings created by the authenticated user.
+    """
+    return listing_service.get_listings_by_seller(username, db)
+
+
+@router.get("/my-purchases", response_model=List[ListingResponse])
+def get_my_purchases(
+    db: Session = Depends(get_db),
+    username: str = Depends(auth_service.verify_token)
+):
+    """
+    Get a list of all domains purchased by the authenticated user via listings.
+    """
+    return listing_service.get_listings_purchased_by_user(username, db)
+
+
+@router.get("/{listing_id}", response_model=ListingResponse)
+def get_listing_details(
+    listing_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Get detailed information about a single listing.
+    """
+    return listing_service.get_listing_details(listing_id, db)
+
+
+@router.post("/{listing_id}/purchase", response_model=ListingResponse)
+def purchase_listing(
+    listing_id: int,
+    db: Session = Depends(get_db),
+    username: str = Depends(auth_service.verify_token)
+):
+    """
+    Purchase a domain from an active listing.
+    """
+    return listing_service.purchase_listing(listing_id, username, db)
+
+
+@router.delete("/{listing_id}", response_model=ListingResponse)
+def cancel_listing(
+    listing_id: int,
+    db: Session = Depends(get_db),
+    username: str = Depends(auth_service.verify_token)
+):
+    """
+    Cancel an active listing. Can only be done by the seller.
+    """
+    return listing_service.cancel_listing(listing_id, username, db)
+
+===== routes\user_routes.py =====
+from fastapi import APIRouter, Depends
+
+from services.namecheap_service import NamecheapService
+from services.payment_service import PaymentService
+from services.auth_service import AuthService
+from services.database_service import DatabaseService
+
+from models.api_dto import DomainRegisterUserDetails, UserDomainResponse, UserTransactionResponse, SavePaymentRequest, \
+    UserMyDetailsResponse
+from database.connection import get_db
+from sqlalchemy.orm import Session
+from typing import List
+
+router = APIRouter()
+namecheap = NamecheapService()
+database_service = DatabaseService()
+auth_service = AuthService()
+payment_service = PaymentService()
+
+
+@router.get("/user-details")
+def get_user_details(username: str = Depends(auth_service.verify_token), db: Session = Depends(get_db)):
+    """Check availability of additional details in user_details model."""
+    details = database_service.get_user_details(username, db)
+    return details
+
+@router.post("/user-details")
+def post_user_details(user_details: DomainRegisterUserDetails, username: str = Depends(auth_service.verify_token),
+        db: Session = Depends(get_db)):
+    """Save or update additional user details."""
+    saved_details = database_service.create_or_update_user_details(username, user_details, db)
+    return {"message": "User details saved successfully", "details": saved_details}
+
+@router.get("/my-domains", response_model=List[UserDomainResponse])
+def get_my_domains(username: str = Depends(auth_service.verify_token), db: Session = Depends(get_db)):
+    """
+    Get a list of all domains owned by the user.
+    """
+    domains = database_service.get_user_domains(username, db)
+    return domains
+
+@router.get("/my-transactions", response_model=List[UserTransactionResponse])
+def get_my_transactions(username: str = Depends(auth_service.verify_token), db: Session = Depends(get_db)):
+    """
+    Get a list of all transactions owned by the user.
+    """
+    transactions = database_service.get_user_transactions(username, db)
+    return transactions
+
+@router.get("/", response_model=UserMyDetailsResponse)
+def get_user(username: str = Depends(auth_service.verify_token), db: Session = Depends(get_db)):
+    """Gets the current user's details"""
+    user = database_service.get_user(username, db)
+    return user
+
+
+@router.post("/setup-intent")
+def setup_intent(
+        username: str = Depends(auth_service.verify_token),
+        db: Session = Depends(get_db)
+):
+    """Creates a setup intent for the authenticated user to save a payment method."""
+    return payment_service.create_setup_intent(username, db)
+
+@router.post("/save-payment-method")
+def save_payment_method(
+    request: SavePaymentRequest,
+    username: str = Depends(auth_service.verify_token),
+    db: Session = Depends(get_db)
+):
+    """Saves a payment method for the authenticated user."""
+    return payment_service.save_payment_method(username, request.payment_method_id, db)
+
+@router.get("/payment-info/")
+def get_payment_info(
+    username: str = Depends(auth_service.verify_token),
+    db: Session = Depends(get_db)
+):
+    """Gets payment information for the authenticated user."""
+    return payment_service.get_payment_info(username, db)
+
+@router.delete("/payment-method/")
+def remove_payment_method(
+    username: str = Depends(auth_service.verify_token),
+    db: Session = Depends(get_db)
+):
+    """Removes the payment method for the authenticated user."""
+    return payment_service.remove_payment_method(username, db)
+
+===== services\__init__.py =====
+
+
+===== services\auction_service.py =====
+import stripe
+from fastapi import HTTPException, status
+from sqlalchemy.orm import Session
+from datetime import datetime, timedelta
+from models.db_models import User, Domain, Auction, Bid, AuctionStatus, TransactionType
+from models.api_dto import AuctionCreateRequest, BidCreateRequest, AuctionResponse, BidResponse
+from typing import List
+
+from services.payment_service import PaymentService
+
+
+class AuctionService:
+    def create_auction(self, request: AuctionCreateRequest, username: str, db: Session):
+        # Find the user who is creating the auction
+        seller = db.query(User).filter(User.username == username).first()
+        if not seller:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Seller not found.")
+
+        # Find the domain and verify ownership
+        domain = db.query(Domain).filter(Domain.domain_name == request.domain_name).first()
+        if not domain:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Domain not found.")
+
+        if domain.user_id != seller.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not own this domain.")
+
+        # Check if the domain is already in an auction
+        existing_auction = db.query(Auction).filter(Auction.domain_id == domain.id,
+                                                    Auction.status == AuctionStatus.ACTIVE).first()
+        if existing_auction:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="This domain is already in an active auction.")
+
+        # Create the new auction
+        end_time = datetime.utcnow() + timedelta(days=request.duration_days)
+        new_auction = Auction(
+            domain_id=domain.id,
+            seller_id=seller.id,
+            start_price=request.start_price,
+            end_time=end_time,
+            status=AuctionStatus.ACTIVE
+        )
+        db.add(new_auction)
+        db.commit()
+        db.refresh(new_auction)
+        return new_auction
+
+    def place_bid(self, auction_id: int, request: BidCreateRequest, username: str, db: Session):
+        # find the bidder and the auction
+        bidder = db.query(User).filter(User.username == username).first()
+        auction = db.query(Auction).get(auction_id)
+
+        if not bidder.stripe_payment_method_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Setup payment method not found.")
+
+        if not auction:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Auction not found.")
+
+        # validation checks
+        if auction.status != AuctionStatus.ACTIVE:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This auction is not active.")
+
+        if auction.end_time < datetime.utcnow():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This auction has already ended.")
+
+        if auction.seller_id == bidder.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You cannot bid on your own auction.")
+
+        # check if bid amount is valid
+        highest_bid = db.query(Bid).filter(Bid.auction_id == auction_id).order_by(Bid.bid_amount.desc()).first()
+
+        min_bid_amount = highest_bid.bid_amount if highest_bid else auction.start_price
+
+        if request.amount <= min_bid_amount:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=f"Your bid must be higher than the current highest bid of ${min_bid_amount}.")
+
+        # create and save the new bid
+        new_bid = Bid(
+            auction_id=auction.id,
+            bidder_id=bidder.id,
+            bid_amount=request.amount
+        )
+        db.add(new_bid)
+        db.commit()
+        db.refresh(auction)  # Refresh auction to show new bid
+        return auction
+
+    def get_auction_details(self, auction_id: int, db: Session):
+        auction = db.query(Auction).get(auction_id)
+        if not auction:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Auction not found.")
+        return self._format_auction_response(auction)
+
+    def get_active_auctions(self, db: Session):
+        auctions = db.query(Auction).filter(Auction.status == AuctionStatus.ACTIVE).all()
+        return [self._format_auction_response(auc) for auc in auctions]
+
+    def close_auction(self, auction_id: int, username: str, db: Session):
+        auction = db.query(Auction).get(auction_id)
+        user = db.query(User).filter(User.username == username).first()
+
+        if not auction:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Auction not found.")
+
+        # Only the seller can close the auction
+        if auction.seller_id != user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the seller can close this auction.")
+
+        if auction.status != AuctionStatus.ACTIVE:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Auction is not active.")
+
+        return self._process_auction_closure(auction, db)
+
+    def _system_close_auction(self, auction_id: int, db: Session):
+        """ Internal method for the system (Celery worker) to close an auction. """
+        auction = db.query(Auction).get(auction_id)
+        if not auction or auction.status != AuctionStatus.ACTIVE:
+            # Auction might have been closed or cancelled by the user in the meantime.
+            return
+
+        return self._process_auction_closure(auction, db)
+
+    def _process_auction_closure(self, auction: Auction, db: Session):
+        """ Core logic to close an auction, find a winner, and process payment. """
+        winning_bid = (
+            db.query(Bid)
+            .filter(Bid.auction_id == auction.id)
+            .order_by(Bid.bid_amount.desc())
+            .first()
+        )
+
+        if winning_bid:
+            auction.winner_id = winning_bid.bidder_id
+            domain = db.query(Domain).get(auction.domain_id)
+            domain.user_id = winning_bid.bidder_id
+            domain.bought_date = datetime.utcnow()
+            domain.price = winning_bid.bid_amount
+
+            winner = db.query(User).get(winning_bid.bidder_id)
+            if not winner.stripe_customer_id or not winner.stripe_payment_method_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Winner does not have a saved payment method."
+                )
+
+            try:
+                payment_intent = stripe.PaymentIntent.create(
+                    amount=int(winning_bid.bid_amount * 100),
+                    currency="cad",
+                    customer=winner.stripe_customer_id,
+                    payment_method=winner.stripe_payment_method_id,
+                    off_session=True,
+                    confirm=True
+                )
+                payment_status = payment_intent.status
+            except stripe.error.CardError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail=f"Payment failed: {e.user_message}"
+                )
+
+            payment_service = PaymentService()
+            payment_service.create_transaction(
+                user_id=winning_bid.bidder_id, domain_id=domain.id, auction_id=auction.id,
+                transaction_type=TransactionType.AUCTION_WIN, amount=winning_bid.bid_amount,
+                description=f"Won auction for domain {domain.domain_name}",
+                domain_name_at_purchase=domain.domain_name, status=payment_status.upper(), db=db
+            )
+            payment_service.create_transaction(
+                user_id=auction.seller_id, domain_id=domain.id, auction_id=auction.id,
+                transaction_type=TransactionType.AUCTION_SALE, amount=winning_bid.bid_amount,
+                description=f"Sold domain {domain.domain_name} in auction",
+                domain_name_at_purchase=domain.domain_name, status=payment_status.upper(), db=db
+            )
+
+        auction.status = AuctionStatus.CLOSED
+        db.commit()
+        db.refresh(auction)
+        return self._format_auction_response(auction)
+
+    def cancel_auction(self, auction_id: int, username: str, db: Session):
+        """ Cancels an auction. Can only be done by the seller if no bids exist. """
+        auction = db.query(Auction).get(auction_id)
+        user = db.query(User).filter(User.username == username).first()
+
+        if not auction:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Auction not found.")
+
+        if auction.seller_id != user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="Only the seller can cancel this auction.")
+
+        if auction.status != AuctionStatus.ACTIVE:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="Only active auctions can be cancelled.")
+
+        # # Business Rule: Prevent cancellation if bids have been placed.
+        # if auction.bids:
+        #     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+        #                         detail="Cannot cancel an auction that already has bids.")
+
+        auction.status = AuctionStatus.CANCELLED
+        db.commit()
+        db.refresh(auction)
+        return self._format_auction_response(auction)
+
+    def _format_auction_response(self, auction: Auction):
+        """Helper to format the response model consistently."""
+        highest_bid = auction.bids[0].bid_amount if auction.bids else None
+
+        return AuctionResponse(
+            id=auction.id,
+            domain_name=auction.domain.domain_name,
+            seller_username=auction.seller.username,
+            start_price=float(auction.start_price),
+            current_highest_bid=float(highest_bid) if highest_bid else None,
+            end_time=auction.end_time,
+            status=auction.status.value,
+            winner_username=auction.winner.username if auction.winner else None,
+            bids=[BidResponse(
+                bidder_username=bid.bidder.username,
+                bid_amount=float(bid.bid_amount),
+                created_at=bid.created_at
+            ) for bid in auction.bids]
+        )
+
+    def get_auctions_by_seller(self, username: str, db: Session) -> List[AuctionResponse]:
+        seller = db.query(User).filter(User.username == username).first()
+        if not seller:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Seller user not found.")
+
+        auctions = db.query(Auction).filter(
+            Auction.seller_id == seller.id
+        ).all()
+        return [self._format_auction_response(auc) for auc in auctions]
+
+    def get_auctions_by_bidder(self, username: str, db: Session) -> List[AuctionResponse]:
+        bidder_user = db.query(User).filter(User.username == username).first()
+        if not bidder_user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bidder user not found.")
+
+        bidded_auction_ids = db.query(Bid.auction_id).filter(Bid.bidder_id == bidder_user.id).distinct().all()
+        bidded_auction_ids = [aid[0] for aid in bidded_auction_ids]  # Extract IDs from tuples
+
+        auctions = db.query(Auction).filter(
+            Auction.id.in_(bidded_auction_ids)
+        ).all()
+        return [self._format_auction_response(auc) for auc in auctions]
+
+    def get_auctions_won_by_user(self, username: str, db: Session) -> List[AuctionResponse]:
+        winner_user = db.query(User).filter(User.username == username).first()
+        if not winner_user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Winner user not found.")
+
+        auctions = db.query(Auction).filter(
+            Auction.winner_id == winner_user.id,
+            Auction.status == AuctionStatus.CLOSED
+        ).all()
+        return [self._format_auction_response(auc) for auc in auctions]
+
+===== services\auth_service.py =====
+from datetime import datetime, timedelta
+import jwt
+from fastapi.security import OAuth2PasswordBearer
+from passlib.context import CryptContext
+from sqlalchemy.orm import Session
+from models.db_models import User, UserDetails
+from fastapi import HTTPException, Depends
+from dotenv import load_dotenv
+import os
+import logging
+
+logger = logging.getLogger(__name__)
+
+load_dotenv()
+
+SECRET_KEY = os.getenv("SECRET_KEY")
+ALGORITHM = "HS256"
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+
+class AuthService:
+    def create_user(self, username: str, email: str, password: str, db: Session):
+        hashed_password = pwd_context.hash(password)
+        user = User(username=username, email=email, password_hash=hashed_password)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        user_details = UserDetails(user_id=user.id, email=email)
+        db.add(user_details)
+        db.commit()
+        return user
+
+    def authenticate_user(self, username: str, password: str, db: Session):
+        user = db.query(User).filter(User.username == username).first()
+        if user and pwd_context.verify(password, user.password_hash):
+            return user
+        return None
+
+    def create_access_token(self, username: str):
+        expiration = datetime.utcnow() + timedelta(hours=1000)
+        token_data = {"sub": username, "exp": expiration}
+        return jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
+
+    def verify_token(self, token: str = Depends(oauth2_scheme)):
+        """Verify the JWT token and return the username."""
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            return payload.get("sub")  # Extract the username
+        except jwt.ExpiredSignatureError:
+            logger.warning(f"Authentication failed: Token expired")
+            raise HTTPException(status_code=401, detail="Token expired")
+        except jwt.InvalidTokenError:
+            logger.warning(f"Authentication failed: Invalid token")
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+===== services\database_service.py =====
+from fastapi import HTTPException
+from sqlalchemy.orm import Session, joinedload
+
+from database.connection import get_db
+from models.db_models import User, UserDetails, Domain, Auction, Transaction, Listing, AuctionStatus, ListingStatus
+from models.api_dto import DomainRegisterUserDetails
+
+class DatabaseService:
+    def get_user_domains(self, username: str, db: Session):
+        """
+        Fetch all domains owned by a user, including their auction and listing status.
+        """
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            return []
+        # query domains and left join with active auctions and listings
+        domains_with_status = db.query(
+            Domain,
+            Auction.id.isnot(None).label("is_auctioned"),
+            Listing.id.isnot(None).label("is_listed")
+        ).outerjoin(
+            Auction, (Domain.id == Auction.domain_id) & (Auction.status == AuctionStatus.ACTIVE)
+        ).outerjoin(
+            Listing, (Domain.id == Listing.domain_id) & (Listing.status == ListingStatus.ACTIVE)
+        ).filter(Domain.user_id == user.id).all()
+
+        response = []
+        for domain, is_auctioned, is_listed in domains_with_status:
+            response.append({
+                "id": domain.id,
+                "domain_name": domain.domain_name,
+                "price": domain.price,
+                "bought_date": domain.bought_date,
+                "expiry_date": domain.expiry_date,
+                "is_auctioned": is_auctioned,
+                "is_listed": is_listed,
+            })
+
+        return response
+
+    def get_user_auctions(self, username: str, db: Session):
+        """Fetch all domains owned by a user."""
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            return []  # Or raise HTTPException if user not found
+
+        auctions = db.query(Auction).filter(Auction.seller_id == user.id).all()
+        return auctions
+
+    def get_user_transactions(self, username: str, db: Session):
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            return []
+        transactions = db.query(Transaction).filter(Transaction.user_id == user.id).order_by(Transaction.transaction_date.desc()).all()
+        return transactions
+
+    def get_user_details(self, username: str, db):
+        """Fetch user details based on the username."""
+        user = db.query(User).filter(User.username == username).one()
+        user_details = db.query(UserDetails).filter(UserDetails.user_id == user.id).one()
+        return user_details
+
+    def get_user(self, username: str, db: Session):
+        """
+        Fetches a user and their email from the related details table efficiently.
+        """
+        user = db.query(User).filter(User.username == username).one_or_none()
+
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        return {
+            "username": user.username,
+            "email": user.email
+        }
+
+
+    def create_or_update_user_details(self, username: str, user_details_dto: DomainRegisterUserDetails, db):
+        """Create or update user details for a given username."""
+        user = db.query(User).filter(User.username == username).one()
+        user_details = db.query(UserDetails).filter(UserDetails.user_id == user.id).first()
+
+        if not user_details:
+            user_details = UserDetails(user_id=user.id)
+
+        formatted_phone = self._format_phone_number(user_details_dto.phone_number)
+        user_details.phone_number = formatted_phone
+        user_details.first_name = user_details_dto.first_name
+        user_details.last_name = user_details_dto.last_name
+        user_details.address = user_details_dto.address
+        user_details.city = user_details_dto.city
+        user_details.state = user_details_dto.state
+        user_details.zip_code = user_details_dto.zip_code
+        user_details.country = user_details_dto.country
+
+        db.add(user_details)
+        db.commit()
+        db.refresh(user_details)
+        return user_details
+
+    def _format_phone_number(self, phone_number: str) -> str:
+        """Format phone number to +NNN.NNNNNNNNNN format."""
+        if not phone_number:
+            return phone_number
+
+        digits_only = ''.join(filter(str.isdigit, phone_number))
+
+        if len(digits_only) < 10:
+            return phone_number
+
+        last_10 = digits_only[-10:]
+        country_code = digits_only[:-10]
+
+        if not country_code:
+            country_code = "1"
+        return f"+{country_code}.{last_10}"
+
+if __name__ == "__main__":
+    database_service = DatabaseService()
+    db = next(get_db())
+    details = database_service.get_user_details(username="omkar", db=db)
+    print(details.email)
+    print(details.first_name)
+
+
+
+
+===== services\listing_service.py =====
+import stripe
+from fastapi import HTTPException, status
+from sqlalchemy.orm import Session
+from datetime import datetime
+from models.db_models import User, Domain, Listing, ListingStatus, Auction, AuctionStatus, TransactionType
+from models.api_dto import ListingCreateRequest, ListingResponse
+from typing import List
+
+from services.payment_service import PaymentService
+
+
+class ListingService:
+    def create_listing(self, request: ListingCreateRequest, username: str, db: Session):
+        """Create a new fixed-price listing for a domain owned by the authenticated user."""
+        # Find the user who is creating the listing
+        seller = db.query(User).filter(User.username == username).first()
+        if not seller:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Seller not found.")
+
+        # Find the domain and verify ownership
+        domain = db.query(Domain).filter(Domain.domain_name == request.domain_name).first()
+        if not domain:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Domain not found.")
+
+        if domain.user_id != seller.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not own this domain.")
+
+        # Check if the domain is already in an active auction
+        existing_auction = db.query(Auction).filter(
+            Auction.domain_id == domain.id,
+            Auction.status == AuctionStatus.ACTIVE
+        ).first()
+        if existing_auction:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This domain is already in an active auction."
+            )
+
+        # Check if the domain is already listed
+        existing_listing = db.query(Listing).filter(
+            Listing.domain_id == domain.id,
+            Listing.status == ListingStatus.ACTIVE
+        ).first()
+        if existing_listing:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This domain is already listed for sale."
+            )
+
+        # Create the new listing
+        new_listing = Listing(
+            domain_id=domain.id,
+            seller_id=seller.id,
+            price=request.price,
+            status=ListingStatus.ACTIVE
+        )
+        db.add(new_listing)
+        db.commit()
+        db.refresh(new_listing)
+        return new_listing
+
+    def get_active_listings(self, db: Session):
+        """Get all active listings."""
+        listings = db.query(Listing).filter(Listing.status == ListingStatus.ACTIVE).all()
+        return [self._format_listing_response(listing) for listing in listings]
+
+    def get_listing_details(self, listing_id: int, db: Session):
+        """Get detailed information about a single listing."""
+        listing = db.query(Listing).get(listing_id)
+        if not listing:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Listing not found.")
+        return self._format_listing_response(listing)
+
+    def get_listings_by_seller(self, username: str, db: Session) -> List[ListingResponse]:
+        """Get all listings created by a specific seller."""
+        seller = db.query(User).filter(User.username == username).first()
+        if not seller:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Seller not found.")
+
+        listings = db.query(Listing).filter(Listing.seller_id == seller.id).all()
+        return [self._format_listing_response(listing) for listing in listings]
+
+    def get_listings_purchased_by_user(self, username: str, db: Session) -> List[ListingResponse]:
+        """Get all listings purchased by a specific user."""
+        buyer = db.query(User).filter(User.username == username).first()
+        if not buyer:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Buyer not found.")
+
+        listings = db.query(Listing).filter(
+            Listing.buyer_id == buyer.id,
+            Listing.status == ListingStatus.SOLD
+        ).all()
+        return [self._format_listing_response(listing) for listing in listings]
+
+    def purchase_listing(self, listing_id: int, username: str, db: Session):
+        """Purchase a domain from an active listing."""
+        # Find the listing and buyer
+        listing = db.query(Listing).get(listing_id)
+        buyer = db.query(User).filter(User.username == username).first()
+
+        if not listing:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Listing not found.")
+
+        if not buyer:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Buyer not found.")
+
+        # Validation checks
+        if listing.status != ListingStatus.ACTIVE:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This listing is not active.")
+
+        if listing.seller_id == buyer.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You cannot purchase your own listing."
+            )
+
+        # Check if buyer has a saved payment method
+        if not buyer.stripe_customer_id or not buyer.stripe_payment_method_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A card is required to complete this purchase. Please add one to your account first."
+            )
+
+        # Process payment with Stripe
+        try:
+            payment_intent = stripe.PaymentIntent.create(
+                amount=int(listing.price * 100),  # Stripe expects cents
+                currency="cad",
+                customer=buyer.stripe_customer_id,
+                payment_method=buyer.stripe_payment_method_id,
+                off_session=True,
+                confirm=True
+            )
+            payment_status = payment_intent.status
+        except stripe.error.CardError as e:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=f"Payment failed: {e.user_message}"
+            )
+
+        # Transfer domain ownership
+        domain = db.query(Domain).get(listing.domain_id)
+        domain.user_id = buyer.id
+        domain.bought_date = datetime.utcnow()
+        domain.price = listing.price
+
+        # Update listing
+        listing.buyer_id = buyer.id
+        listing.sold_at = datetime.utcnow()
+        listing.status = ListingStatus.SOLD
+
+        payment_service = PaymentService()
+
+        # Create transaction for BUYER
+        payment_service.create_transaction(
+            user_id=buyer.id,
+            domain_id=domain.id,
+            listing_id=listing.id,
+            transaction_type=TransactionType.LISTING_PURCHASE,
+            amount=listing.price,
+            description=f"Purchased domain {domain.domain_name} from listing",
+            domain_name_at_purchase=domain.domain_name,
+            status=payment_status.upper(),
+            db=db
+        )
+
+        # Create transaction for SELLER
+        payment_service.create_transaction(
+            user_id=listing.seller_id,
+            domain_id=domain.id,
+            listing_id=listing.id,
+            transaction_type=TransactionType.LISTING_SALE,
+            amount=listing.price,
+            description=f"Sold domain {domain.domain_name} via listing",
+            domain_name_at_purchase=domain.domain_name,
+            status=payment_status.upper(),
+            db=db
+        )
+
+        # Commit all changes
+        db.commit()
+        db.refresh(listing)
+
+        return self._format_listing_response(listing)
+
+    def cancel_listing(self, listing_id: int, username: str, db: Session):
+        """Cancel an active listing. Can only be done by the seller."""
+        listing = db.query(Listing).get(listing_id)
+        user = db.query(User).filter(User.username == username).first()
+
+        if not listing:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Listing not found.")
+
+        # Only the seller can cancel the listing
+        if listing.seller_id != user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the seller can cancel this listing."
+            )
+
+        if listing.status != ListingStatus.ACTIVE:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Listing is not active."
+            )
+
+        # Cancel the listing
+        listing.status = ListingStatus.CANCELLED
+        db.commit()
+        db.refresh(listing)
+
+        return self._format_listing_response(listing)
+
+    def _format_listing_response(self, listing: Listing):
+        """Helper to format the response model consistently."""
+        return ListingResponse(
+            id=listing.id,
+            domain_name=listing.domain.domain_name,
+            seller_username=listing.seller.username,
+            price=float(listing.price),
+            created_at=listing.created_at,
+            sold_at=listing.sold_at,
+            status=listing.status.value,
+            buyer_username=listing.buyer.username if listing.buyer else None
+        )
+
+===== services\namecheap_management_service.py =====
+import os
+import requests
+import xmltodict
+from dotenv import load_dotenv
+from typing import List, Dict, Optional
+from datetime import datetime
+from fastapi import HTTPException
+
+from models.api_dto import (
+    DNSRecordResponse,
+    DomainInfoResponse,
+    DNSRecordRequest,
+    DomainStatusResponse
+)
+
+
+class NamecheapManagementService:
+    """
+    Service for managing domains via Namecheap API.
+    Handles domain info retrieval, DNS management, forwarding, and hosting setup.
+    """
+
+    def __init__(self):
+        load_dotenv()
+
+        self.api_user = os.getenv("API_USER")
+        self.api_key = os.getenv("API_KEY")
+        self.username = os.getenv("NAMEOFUSER")
+        self.client_ip = os.getenv("CLIENT_IP")
+
+        # Use sandbox by default, switch to production via env var
+        use_production = os.getenv("NAMECHEAP_USE_PRODUCTION", "false").lower() == "true"
+        self.api_url = (
+            "https://api.namecheap.com/xml.response" if use_production
+            else "https://api.sandbox.namecheap.com/xml.response"
+        )
+
+        # Default IP for hosting (can be configured via env)
+        self.default_hosting_ip = os.getenv("DEFAULT_HOSTING_IP", "34.123.45.6")
+
+    def _build_api_url(self, command: str, **params) -> str:
+        """Builds a Namecheap API request URL with common parameters."""
+        base_url = (
+            f"{self.api_url}?ApiUser={self.api_user}&ApiKey={self.api_key}"
+            f"&UserName={self.username}&ClientIp={self.client_ip}&Command={command}"
+        )
+        for key, value in params.items():
+            base_url += f"&{key}={value}"
+        return base_url
+
+    def _make_api_request(self, url: str) -> Dict:
+        """
+        Make request to Namecheap API and convert XML response to dict.
+        Raises HTTPException on error.
+        """
+        try:
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+
+            # Convert XML to dict
+            data = xmltodict.parse(response.text)
+
+            # Check for API errors
+            api_response = data.get('ApiResponse', {})
+            if api_response.get('@Status') == 'ERROR':
+                errors = api_response.get('Errors', {}).get('Error', [])
+                if isinstance(errors, dict):
+                    errors = [errors]
+                error_messages = [e.get('#text', 'Unknown error') for e in errors]
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Namecheap API Error: {'; '.join(error_messages)}"
+                )
+
+            return data
+
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Failed to connect to Namecheap API: {str(e)}"
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Unexpected error: {str(e)}"
+            )
+
+    def get_domain_info(self, sld: str, tld: str, username: str) -> DomainInfoResponse:
+        """
+        Retrieves comprehensive information about a domain.
+
+        Args:
+            sld: Second-level domain (e.g., 'example' in example.com)
+            tld: Top-level domain (e.g., 'com' in example.com)
+            username: Username of the requesting user
+
+        Returns:
+            DomainInfoResponse with domain details
+        """
+        url = self._build_api_url(
+            "namecheap.domains.getInfo",
+            DomainName=f"{sld}.{tld}"
+        )
+
+        data = self._make_api_request(url)
+
+        # Extract domain info from response
+        cmd_response = data['ApiResponse']['CommandResponse']
+        domain_info = cmd_response['DomainGetInfoResult']
+
+        # Parse dates
+        created_date = self._parse_date(domain_info.get('@CreatedDate'))
+        expires_date = self._parse_date(domain_info.get('@ExpiredDate'))
+
+        # Extract nameservers
+        nameservers_data = domain_info.get('DnsDetails', {}).get('Nameserver', [])
+        if isinstance(nameservers_data, dict):
+            nameservers_data = [nameservers_data]
+        nameservers = [ns.get('#text', '') for ns in nameservers_data if isinstance(ns, dict)]
+
+        return DomainInfoResponse(
+            domain_name=f"{sld}.{tld}",
+            owner_name=domain_info.get('@OwnerName', ''),
+            is_owner=domain_info.get('@IsOwner', 'false').lower() == 'true',
+            status=domain_info.get('@Status', 'Unknown'),
+            created_date=created_date,
+            expires_date=expires_date,
+            is_locked=domain_info.get('@IsLocked', 'false').lower() == 'true',
+            auto_renew=domain_info.get('@AutoRenew', 'false').lower() == 'true',
+            whoisguard_enabled=domain_info.get('Whoisguard', {}).get('@Enabled', 'false').lower() == 'true',
+            is_premium=domain_info.get('@IsPremium', 'false').lower() == 'true',
+            nameservers=nameservers
+        )
+
+    def get_dns_records(self, sld: str, tld: str) -> List[DNSRecordResponse]:
+        """
+        Retrieves all DNS records for a domain.
+
+        Args:
+            sld: Second-level domain
+            tld: Top-level domain
+
+        Returns:
+            List of DNSRecordResponse objects
+        """
+        url = self._build_api_url(
+            "namecheap.domains.dns.getHosts",
+            SLD=sld,
+            TLD=tld
+        )
+
+        data = self._make_api_request(url)
+
+        # Extract host records
+        cmd_response = data['ApiResponse']['CommandResponse']
+        hosts_data = cmd_response['DomainDNSGetHostsResult'].get('host', [])
+
+        # Ensure hosts_data is a list
+        if isinstance(hosts_data, dict):
+            hosts_data = [hosts_data]
+
+        dns_records = []
+        for host in hosts_data:
+            dns_records.append(DNSRecordResponse(
+                host_id=host.get('@HostId'),
+                hostname=host.get('@Name', ''),
+                record_type=host.get('@Type', ''),
+                address=host.get('@Address', ''),
+                ttl=int(host.get('@TTL', 1800)),
+                mx_pref=int(host.get('@MXPref', 10)) if host.get('@MXPref') else None,
+                is_active=host.get('@IsActive', 'true').lower() == 'true'
+            ))
+
+        return dns_records
+
+    def update_dns_records(self, sld: str, tld: str, records: List[DNSRecordRequest]) -> List[DNSRecordResponse]:
+        """
+        Updates DNS records for a domain. This replaces ALL existing records.
+
+        Args:
+            sld: Second-level domain
+            tld: Top-level domain
+            records: List of DNS records to set
+
+        Returns:
+            Updated list of DNS records
+        """
+        if not records:
+            raise HTTPException(
+                status_code=400,
+                detail="At least one DNS record is required"
+            )
+
+        # Build parameters for setHosts call
+        params = {"SLD": sld, "TLD": tld}
+
+        for idx, record in enumerate(records, start=1):
+            params[f"HostName{idx}"] = record.hostname
+            params[f"RecordType{idx}"] = record.record_type
+            params[f"Address{idx}"] = record.address
+            params[f"TTL{idx}"] = str(record.ttl)
+
+            if record.record_type == "MX":
+                params[f"MXPref{idx}"] = str(record.mx_pref)
+
+        url = self._build_api_url("namecheap.domains.dns.setHosts", **params)
+        self._make_api_request(url)
+
+        # Return updated records
+        return self.get_dns_records(sld, tld)
+
+    def set_url_forwarding(self, sld: str, tld: str, target_url: str, forward_type: str = "permanent") -> Dict:
+        """
+        Sets up URL forwarding for a domain.
+
+        Args:
+            sld: Second-level domain
+            tld: Top-level domain
+            target_url: URL to forward to
+            forward_type: 'permanent' (301) or 'temporary' (302)
+
+        Returns:
+            Success status dictionary
+        """
+        # Namecheap expects the subdomain for forwarding
+        # Use '@' for root domain forwarding
+        url = self._build_api_url(
+            "namecheap.domains.dns.setHosts",
+            SLD=sld,
+            TLD=tld,
+            HostName1="@",
+            RecordType1="URL",
+            Address1=target_url,
+            TTL1="100"
+        )
+
+        if forward_type == "permanent":
+            url += "&URLForwardingType=301"
+        else:
+            url += "&URLForwardingType=302"
+
+        self._make_api_request(url)
+
+        return {
+            "success": True,
+            "message": f"URL forwarding set to {target_url}",
+            "forward_type": forward_type
+        }
+
+    def set_hosting(self, sld: str, tld: str, custom_ip: Optional[str] = None) -> Dict:
+        """
+        Sets up basic hosting by configuring A and CNAME records.
+
+        Args:
+            sld: Second-level domain
+            tld: Top-level domain
+            custom_ip: Optional custom IP (uses default if not provided)
+
+        Returns:
+            Dictionary with success status and configured records
+        """
+        hosting_ip = custom_ip or self.default_hosting_ip
+
+        # Standard hosting records
+        hosting_records = [
+            DNSRecordRequest(
+                hostname="@",
+                record_type="A",
+                address=hosting_ip,
+                ttl=1800
+            ),
+            DNSRecordRequest(
+                hostname="www",
+                record_type="CNAME",
+                address=f"{sld}.{tld}.",
+                ttl=1800
+            )
+        ]
+
+        updated_records = self.update_dns_records(sld, tld, hosting_records)
+
+        return {
+            "success": True,
+            "message": f"Hosting configured with IP {hosting_ip}",
+            "dns_records_set": updated_records
+        }
+
+    def get_domain_status(self, sld: str, tld: str, username: str) -> DomainStatusResponse:
+        """
+        Gets comprehensive status including info, DNS, and configuration.
+
+        Args:
+            sld: Second-level domain
+            tld: Top-level domain
+            username: Username of requesting user
+
+        Returns:
+            DomainStatusResponse with all domain details
+        """
+        domain_info = self.get_domain_info(sld, tld, username)
+        dns_records = self.get_dns_records(sld, tld)
+
+        # Check if domain is hosted (has A record for @)
+        is_hosted = any(
+            r.hostname == "@" and r.record_type == "A"
+            for r in dns_records
+        )
+
+        # Check if domain is forwarding (has URL record)
+        is_forwarding = any(
+            r.record_type == "URL"
+            for r in dns_records
+        )
+
+        return DomainStatusResponse(
+            domain_info=domain_info,
+            dns_records=dns_records,
+            is_hosted=is_hosted,
+            is_forwarding=is_forwarding
+        )
+
+    def _parse_date(self, date_str: Optional[str]) -> Optional[datetime]:
+        """Parse Namecheap date format to datetime object."""
+        if not date_str:
+            return None
+        try:
+            return datetime.strptime(date_str, "%m/%d/%Y")
+        except (ValueError, TypeError):
+            return None
+
+===== services\namecheap_service.py =====
+import os
+import requests
+import xml.etree.ElementTree as ET
+from dotenv import load_dotenv
+import concurrent.futures
+from datetime import datetime, timedelta
+from services.database_service import DatabaseService
+import utils.utils as utils
+import models.db_models as models
+database_service = DatabaseService()
+
+
+class NamecheapService:
+    def __init__(self):
+        load_dotenv()
+
+        self.api_user = os.getenv("API_USER")
+        self.api_key = os.getenv("API_KEY")
+        self.username = os.getenv("NAMEOFUSER")
+        self.client_ip = os.getenv("CLIENT_IP")
+        self.api_url = "https://api.sandbox.namecheap.com/xml.response"
+        self.tld_price_cache = {}  # Cache for TLD prices
+
+    def _build_api_url(self, command, **params):
+        """Builds a Namecheap API request URL with common parameters."""
+        base_url = (f"{self.api_url}?ApiUser={self.api_user}&ApiKey={self.api_key}"
+                    f"&UserName={self.username}&ClientIp={self.client_ip}&Command={command}")
+        for key, value in params.items():
+            base_url += f"&{key}={value}"
+        return base_url
+
+    def _make_api_request(self, url):
+        """Make request to Namecheap API."""
+        response = requests.get(url)
+
+        if response.status_code != 200:
+            raise Exception(f"Failed to fetch response from Namecheap API. Status code: {response.status_code}")
+
+        return response
+
+    def check_domain_availability(self, domain: str):
+        if "." in domain:
+            base_name = domain.split('.')[0]
+            original_domain = domain
+        else:
+            base_name = domain
+            original_domain = f"{domain}.com"
+
+        similar_domains = utils.generate_similar_domains(base_name)
+        all_domains_to_check = [original_domain] + similar_domains
+
+        batch_size = 2
+        domain_results = {}
+        tlds_to_check = set()
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            # Split domains into batches
+            batches = [all_domains_to_check[i:i + batch_size]
+                       for i in range(0, len(all_domains_to_check), batch_size)]
+            future_to_batch = {executor.submit(self._check_domain_batch, batch): batch
+                               for batch in batches}
+
+            for future in concurrent.futures.as_completed(future_to_batch):
+                batch_results = future.result()
+                domain_results.update(batch_results)
+
+                for domain_name in batch_results:
+                    tld = domain_name.split(".")[-1]
+                    tlds_to_check.add(tld)
+
+        tlds_needing_price = [tld for tld in tlds_to_check if tld not in self.tld_price_cache]
+        if tlds_needing_price:
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future_to_tld = {executor.submit(self.get_tld_price, tld): tld
+                                 for tld in tlds_needing_price}
+
+                for future in concurrent.futures.as_completed(future_to_tld):
+                    tld = future_to_tld[future]
+                    try:
+                        result = future.result()
+                        if not isinstance(result, dict) or "error" not in result:  # If not an error dict
+                            # Assuming get_tld_price now returns a dict with price and duration
+                            self.tld_price_cache[tld] = result
+                    except Exception as e:
+                        print(f"Error fetching price for TLD {tld}: {e}")
+
+        for domain_name, domain_data in domain_results.items():
+            if not domain_data["is_premium"]:
+                tld = domain_name.split(".")[-1]
+                if tld in self.tld_price_cache:
+                    price_info = self.tld_price_cache[tld]
+                    if isinstance(price_info, dict):
+                        # If price cache now stores a dict with price and duration
+                        domain_data["price"] = price_info["price"]
+                        domain_data["min_duration"] = price_info["min_duration"]
+                    else:
+                        # Backward compatibility if price cache still has just the price
+                        domain_data["price"] = price_info
+                        domain_data["min_duration"] = 1  # Default duration
+
+        original_result = None
+        suggestions = []
+
+        for domain_name, domain_data in domain_results.items():
+            if domain_data["available"]:
+                domain_info = {
+                    "domain": domain_name,
+                    "price": domain_data.get("price"),
+                    "min_duration": domain_data.get("min_duration", 1)  # Default to 1 if not found
+                }
+
+                if domain_name.lower() == original_domain.lower():
+                    original_result = domain_info
+                else:
+                    suggestions.append(domain_info)
+
+        response = {"suggestions": suggestions}
+        if original_result:
+            response["domain"] = original_result
+
+        return response
+
+    def _check_domain_batch(self, domain_batch):
+        """Check availability for a batch of domains, including premium details."""
+        url = self._build_api_url("namecheap.domains.check", DomainList=",".join(domain_batch))
+
+        try:
+            response = self._make_api_request(url)
+            print(response.text)  # Debugging line, can be removed
+            root = ET.fromstring(response.text)
+            namespace = {"nc": "http://api.namecheap.com/xml.response"}
+
+            batch_results = {}
+            for domain_result in root.findall(".//nc:DomainCheckResult", namespace):
+                domain_name = domain_result.get("Domain")
+                available = domain_result.get("Available") == "true"
+                is_premium = domain_result.get("IsPremiumName") == "true"
+
+                if is_premium:
+                    premium_price = float(domain_result.get("PremiumRegistrationPrice", 0))
+                else:
+                    premium_price = 0
+
+                batch_results[domain_name] = {
+                    "available": available,
+                    "is_premium": is_premium,
+                    "price": premium_price
+                }
+
+            return batch_results
+        except Exception as e:
+            print(f"Error checking domain batch: {e}")
+            return {}
+
+    def get_trending_tlds(self):
+        """Fetches trending TLDs and their pricing."""
+        tlds = ["ai", "com", "xyz", "io", "app", "dev", "store", "shop", "online", "co"]
+        return tlds
+
+    def get_trending_keywords(self):
+        """
+        Returns a list of trending keywords for domain names. This list can later be enhanced by fetching from external source
+        """
+        trending_keywords = [
+            "ainewbie", "cryptobros", "blockchainbros", "startupfounders", "web3flukes", "nftbrokers", "quantumcomputingxyz", "cybersecuritygrumps", "greenerygods",
+            "automation-automators"
+        ]
+        return trending_keywords
+
+    def get_trending_available_domains(self):
+        """
+        Finds trending available domains by checking domain availability for trending keywords.
+        This now uses the same reliable XML parsing as the main search function.
+        """
+        trending_keywords = self.get_trending_keywords()
+        available_domains = []
+
+        # 1. BATCHING: Combine all keywords into a single API call, just like the search.
+        domain_names_to_check = [f"{keyword}.com" for keyword in trending_keywords]
+        domain_list_str = ",".join(domain_names_to_check)
+
+        url_availability = self._build_api_url("namecheap.domains.check", DomainList=domain_list_str)
+
+        try:
+            response_availability = self._make_api_request(url_availability)
+            if response_availability.status_code != 200:
+                print("Failed to get a valid response from Namecheap API.")
+                return []  # Return empty if the API call failed
+
+            # 2. PARSING XML: Use ElementTree to parse the response
+            root = ET.fromstring(response_availability.text)
+            namespace = {'ns': 'http://api.namecheap.com/xml.response'}
+
+            for result in root.findall('.//ns:DomainCheckResult', namespace):
+                # The critical check, identical to the logic in _check_domain_batch
+                if result.get('Available').lower() == 'true':
+                    domain_name = result.get('Domain')
+                    price_info = self.get_tld_price("com")
+
+                    if isinstance(price_info, dict) and "price" in price_info:
+                        available_domains.append({
+                            "domain": domain_name,
+                            "price": price_info["price"]
+                        })
+            return available_domains
+
+        except ET.ParseError as e:
+            print(f"Error parsing XML from Namecheap: {e}")
+            return []
+        except Exception as e:
+            print(f"An unexpected error occurred in get_trending_available_domains: {e}")
+            return []
+
+    def register_domain(self, domain: str, years: int, price, username, db):
+        """
+        Registers a domain using Namecheap API with only Registrant info.
+        """
+        user_details = database_service.get_user_details(username, db)
+        params = {}
+        for contact_type in ['Admin', 'Tech', 'AuxBilling', 'Registrant']:
+            params[f'{contact_type}FirstName'] = user_details.first_name
+            params[f'{contact_type}LastName'] = user_details.last_name
+            params[f'{contact_type}Address1'] = user_details.address
+            params[f'{contact_type}City'] = user_details.city
+            params[f'{contact_type}StateProvince'] = user_details.state
+            params[f'{contact_type}PostalCode'] = user_details.zip_code
+            params[f'{contact_type}Country'] = user_details.country
+            params[f'{contact_type}Phone'] = user_details.phone_number
+            params[f'{contact_type}EmailAddress'] = user_details.email
+
+        params["AddFreeWhoisguard"] = "yes"
+        params["WGEnabled"] = "yes"
+        params["DomainName"] = domain
+        params["Years"] = years
+
+        url = self._build_api_url("namecheap.domains.create", **params)
+        try:
+            response = self._make_api_request(url)
+            root = ET.fromstring(response.text)
+            ns = {'ns': 'http://api.namecheap.com/xml.response'}
+
+            # Check for API errors
+            error = root.find(".//ns:Error", ns)
+            if error is not None:
+                return {"success": False, "error": error.text}
+
+            # Check registration result
+            result = root.find(".//ns:DomainCreateResult", ns)
+            if result is not None and result.attrib.get("Registered") == "true":
+
+                user = db.query(models.User).filter(models.User.username == username).first()
+                if user:
+                    # Create a new Domain record
+                    current_time = datetime.utcnow()
+                    expiration_date = current_time + timedelta(days=years * 365)
+                    new_domain_record = models.Domain(
+                        user_id=user.id,
+                        domain_name=domain,
+                        price=price,
+                        bought_date=current_time,
+                        expiry_date=expiration_date
+                    )
+                    db.add(new_domain_record)
+                    db.commit()
+
+                return {
+                    "success": True,
+                    "message": "Domain registered successfully",
+                    "order_id": result.attrib.get("OrderID")
+                }
+
+            return {"success": False, "error": "Domain registration failed."}
+
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def get_tld_price(self, tld):
+        """Fetches the registration price and minimum duration of a given TLD"""
+        # Return cached info if available
+        if tld in self.tld_price_cache:
+            return self.tld_price_cache[tld]
+
+        url = self._build_api_url(
+            "namecheap.users.getPricing",
+            ProductType="DOMAIN",
+            ProductCategory="REGISTER",
+            ProductName=tld.upper()
+        )
+
+        try:
+            response = self._make_api_request(url)
+            ns = {'ns': 'http://api.namecheap.com/xml.response'}  # Namespace dictionary
+            root = ET.fromstring(response.text)
+
+            product_element = root.find(
+                ".//ns:ProductCategory[@Name='register']/ns:Product[@Name='{0}']".format(tld.lower()),
+                namespaces=ns)
+
+            if product_element is not None:
+                # Find the price element with the minimum duration
+                price_elements = product_element.findall("ns:Price", namespaces=ns)
+                if price_elements:
+                    # Sort by Duration to find the minimum available
+                    price_elements.sort(key=lambda x: int(x.get("Duration", "0")))
+                    price_element = price_elements[0]  # Get the one with the lowest duration
+
+                    price_str = price_element.get("Price")
+                    duration_str = price_element.get("Duration")
+
+                    if price_str is not None and duration_str is not None:
+                        try:
+                            price = float(price_str)
+                            duration = int(duration_str)
+                            converted_price = utils.convert_usd_to_cad(price)
+
+                            # Store both price and duration in the cache
+                            result = {
+                                "price": converted_price,
+                                "min_duration": duration,
+                                "duration_type": price_element.get("DurationType", "YEAR")
+                            }
+
+                            self.tld_price_cache[tld] = result  # Cache the result
+                            return result
+                        except ValueError:
+                            return {"error": f"Invalid format for price or duration: {price_str}, {duration_str}"}
+                    return {"error": f"Price or duration attribute missing for {tld}"}
+                else:
+                    return {"error": f"No price elements found for {tld}"}
+            else:
+                return {"error": f"Product not found for {tld}"}
+
+        except ET.ParseError as e:
+            return {"error": f"Failed to parse XML response: {str(e)}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+
+if __name__ == "__main__":
+    domain_checker = NamecheapService()
+    #print(domain_checker.get_tld_price("ai"))
+    #print(domain_checker.check_domain_availability("omkar.com"))
+    print(domain_checker.get_trending_available_domains())
+    # print("Fetching trending TLDs...")
+    # print(domain_checker.get_trending_tlds())
+    #
+    # print("Registering a test domain...")
+    # print(domain_checker.register_domain("exampletestdomain123.com"))
+
+===== services\payment_service.py =====
+import os
+import dotenv
+from fastapi import HTTPException
+from sqlalchemy.orm import Session
+import stripe
+from stripe import SetupIntent, PaymentMethod
+
+from services.namecheap_service import NamecheapService
+from models.db_models import Transaction, TransactionType, Domain, User
+from models.api_dto import PaymentRequest
+
+dotenv.load_dotenv()
+stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
+
+class PaymentService:
+    def __init__(self):
+
+        self.namecheap = NamecheapService()
+    def purchase_domain(self, payment_details: PaymentRequest, username: str, db: Session):
+        """
+        Pay for a domain using a saved payment method and register it if payment succeeds.
+        """
+        # Find username
+        user = db.query(User).filter(User.username == username).first()
+        if not user or not user.stripe_customer_id or not user.stripe_payment_method_id:
+            raise HTTPException(
+                status_code=400,
+                detail="A card is required to complete this purchase. Please add one to your account first."
+            )
+
+        total_price = payment_details.price
+        amount_in_cents = int(total_price * 100)
+        domain = payment_details.domain
+        years = payment_details.years
+        if total_price <= 0:
+            return {"error": "Invalid domain price provided."}
+
+        payment_response = self.create_and_confirm_payment(
+            amount=amount_in_cents,
+            customer_id=user.stripe_customer_id,
+            payment_method_id=user.stripe_payment_method_id
+        )
+        payment_intent_id = payment_response.get("payment_intent_id")
+
+        if "error" in payment_response:
+            return {"error": f"Payment failed: {payment_response['error']}"}
+
+        if payment_response.get("status") != "succeeded":
+            return {"error": f"Payment not successful. Status: {payment_response.get('status')}"}
+
+        #  If payment is successful then I register the domain
+        registration_result = self.namecheap.register_domain(domain, years, total_price, username, db)
+        print(registration_result)
+
+        # If Registration unsuccessful
+        if not registration_result.get("success"):
+            self._issue_refund(payment_intent_id)
+
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "code": "DOMAIN_REGISTRATION_FAILED",
+                    "message": "Your payment was successful, but the domain registration failed. Your payment has been automatically refunded.",
+                    "provider_error": registration_result.get("error", "Unknown error from domain provider.")
+                }
+            )
+
+        # create a transaction if everything was successful
+        if registration_result.get("success"):
+            registered_domain_obj = db.query(Domain).filter(Domain.domain_name == domain,
+                                                            Domain.user_id == user.id).first()
+            if registered_domain_obj:
+                self.create_transaction(
+                    user_id=user.id,
+                    domain_id=registered_domain_obj.id,
+                    transaction_type=TransactionType.DOMAIN_REGISTRATION,
+                    amount=total_price,
+                    description=f"Registration of domain {domain} for {years} years.",
+                    domain_name_at_purchase=domain,
+                    years_purchased=years,
+                    status="COMPLETED",
+                    db=db
+                )
+
+        return {
+            "payment_status": payment_response.get("status"),
+            "registration_result": registration_result
+        }
+
+    def create_and_confirm_payment(self, amount: int, customer_id: str, payment_method_id: str, currency: str = "cad"):
+        """
+        Creates and confirms a payment for a customer using their saved payment method.
+        """
+        try:
+            intent = stripe.PaymentIntent.create(
+                amount=amount,
+                currency=currency,
+                customer=customer_id,
+                payment_method=payment_method_id,
+                off_session=True,
+                confirm=True,
+            )
+            return {"status": intent.status, "payment_intent_id": intent.id}
+        except stripe.error.CardError as e:
+            return {"error": e.user_message or str(e)}
+        except stripe.error.StripeError as e:
+            return {"error": str(e)}
+
+    def _issue_refund(self, payment_intent_id: str):
+        """
+        Issues a full refund for a given Payment Intent.
+        """
+        try:
+            stripe.Refund.create(payment_intent=payment_intent_id)
+            print(f"Successfully issued refund for Payment Intent: {payment_intent_id}")
+        except stripe.error.StripeError as e:
+            print(f"CRITICAL ERROR: Failed to issue refund for {payment_intent_id}. Error: {e}")
+
+
+    def create_transaction(
+            self,
+            user_id: int,
+            transaction_type: TransactionType,
+            amount: float,
+            description: str = None,
+            domain_id: int = None,
+            auction_id: int = None,
+            listing_id: int = None,
+            domain_name_at_purchase: str = None,
+            years_purchased: int = None,
+            status: str = "COMPLETED",
+            db: Session = None
+    ):
+        """Creates a new transaction record."""
+        new_transaction = Transaction(
+            user_id=user_id,
+            transaction_type=transaction_type,
+            amount=amount,
+            description=description,
+            domain_id=domain_id,
+            auction_id=auction_id,
+            listing_id=listing_id,
+            domain_name_at_purchase=domain_name_at_purchase,
+            years_purchased=years_purchased,
+            status=status
+        )
+        db.add(new_transaction)
+        db.commit()
+        db.refresh(new_transaction)
+        return new_transaction
+
+    def create_setup_intent(self, username: str, db: Session):
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            raise HTTPException(404, "User not found")
+        if not user.stripe_customer_id:
+            customer = stripe.Customer.create(email=user.email, name=user.username)
+            user.stripe_customer_id = customer.id
+            db.commit()
+
+            #####for testing purpose only #####
+        pm = stripe.PaymentMethod.create(
+            type="card",
+            card={"token": "tok_visa"}
+        )
+        print(pm.id)
+
+
+        setup_intent = stripe.SetupIntent.create(
+            customer=user.stripe_customer_id,
+            payment_method_types=["card"]
+        )
+        return {"client_secret": setup_intent.client_secret}
+
+    def save_payment_method(self, username: str, payment_method_id: str, db: Session):
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            raise HTTPException(404, "User not found")
+
+        stripe.PaymentMethod.attach(payment_method_id, customer=user.stripe_customer_id)
+        stripe.Customer.modify(user.stripe_customer_id, invoice_settings={"default_payment_method": payment_method_id})
+
+        user.stripe_payment_method_id = payment_method_id
+        db.commit()
+        return {"message": "Payment method saved"}
+
+    def get_payment_info(self, username: str, db: Session):
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            raise HTTPException(404, "User not found")
+
+        return {
+            "username": user.username,
+            "stripe_customer_id": user.stripe_customer_id,
+            "stripe_payment_method_id": user.stripe_payment_method_id,
+        }
+
+    def remove_payment_method(self, username: str, db: Session):
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            raise HTTPException(404, "User not found")
+
+        if not user.stripe_payment_method_id:
+            raise HTTPException(400, "No payment method to remove")
+
+        try:
+            stripe.PaymentMethod.detach(user.stripe_payment_method_id)
+            user.stripe_payment_method_id = None
+            db.commit()
+
+            return {"message": "Payment method removed successfully"}
+        except stripe.error.StripeError as e:
+            raise HTTPException(400, str(e))
+
+===== utils\__init__.py =====
+
+
+===== utils\utils.py =====
+import requests
+
+
+def convert_usd_to_cad(usd_amount):
+    """Converts USD to CAD using exchange rate API."""
+    url = "https://v6.exchangerate-api.com/v6/6cdeb5d9db93fcb735409cb5/latest/USD"
+
+    try:
+        response = requests.get(url)
+        data = response.json()
+
+        if data["result"] == "success":
+            exchange_rate = data["conversion_rates"]["CAD"]
+            cad_amount = usd_amount * exchange_rate
+            return round(cad_amount, 2)
+        else:
+            print("Error fetching exchange rates.")
+            return None
+    except requests.exceptions.RequestException as e:
+        print(f"Network error: {e}")
+        return None
+
+def generate_similar_domains(base_name):
+    """Generate similar domain suggestions based on the base name."""
+    tlds = ['com', 'net', 'org', 'io', 'co', 'app', 'dev', 'ai', 'xyz', 'tech']
+
+    prefixes = ['my', 'get', 'the', 'try']
+    suffixes = ['app', 'hub', 'pro', 'site', 'web', 'online']
+
+    suggestions = []
+
+    for tld in tlds:
+        suggestions.append(f"{base_name}.{tld}")
+    for prefix in prefixes:
+        suggestions.append(f"{prefix}{base_name}.com")
+    for suffix in suffixes:
+        suggestions.append(f"{base_name}{suffix}.com")
+
+    return list(set(suggestions))
+
+if __name__ == "__main__":
+    usd_value = 100
+    cad_value = convert_usd_to_cad(usd_value)
+
+    if cad_value is not None:
+        print(f"{usd_value} USD is equal to {cad_value:.2f} CAD")
+    else:
+        print("Currency conversion failed.")
+
+
