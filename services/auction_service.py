@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 from models.db_models import User, Domain, Auction, Bid, AuctionStatus, TransactionType
 from models.api_dto import AuctionCreateRequest, BidCreateRequest, AuctionResponse, BidResponse
 from typing import List
-
 from services.payment_service import PaymentService
 
 
@@ -46,6 +45,7 @@ class AuctionService:
         return new_auction
 
     def place_bid(self, auction_id: int, request: BidCreateRequest, username: str, db: Session):
+        from celery_worker import send_push_notification_task
         # find the bidder and the auction
         bidder = db.query(User).filter(User.username == username).first()
         auction = db.query(Auction).get(auction_id)
@@ -75,6 +75,13 @@ class AuctionService:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail=f"Your bid must be higher than the current highest bid of ${min_bid_amount}.")
 
+        previous_highest_bid = (
+            db.query(Bid)
+            .filter(Bid.auction_id == auction_id)
+            .order_by(Bid.bid_amount.desc())
+            .first()
+        )
+
         # create and save the new bid
         new_bid = Bid(
             auction_id=auction.id,
@@ -84,6 +91,17 @@ class AuctionService:
         db.add(new_bid)
         db.commit()
         db.refresh(auction)  # Refresh auction to show new bid
+        print("Checking previous high bid")
+        if previous_highest_bid:
+            # Don't notify if the previous bidder is the same person
+            if previous_highest_bid.bidder_id != bidder.id:
+                print("Bid outbidden notification sent")
+                send_push_notification_task.delay(
+                    user_id=previous_highest_bid.bidder_id,
+                    title="You've been outbid!",
+                    body=f"Someone bid ${request.amount} on {auction.domain.domain_name}. Bid now to win!",
+                    data={"type": "auction", "id": auction.id}
+                )
         return auction
 
     def get_auction_details(self, auction_id: int, db: Session):
@@ -123,6 +141,8 @@ class AuctionService:
 
     def _process_auction_closure(self, auction: Auction, db: Session):
         """ Core logic to close an auction, find a winner, and process payment. """
+        from celery_worker import send_push_notification_task
+
         winning_bid = (
             db.query(Bid)
             .filter(Bid.auction_id == auction.id)
@@ -154,6 +174,21 @@ class AuctionService:
                     confirm=True
                 )
                 payment_status = payment_intent.status
+                # Notify Winner
+                send_push_notification_task.delay(
+                    user_id=winning_bid.bidder_id,
+                    title="You Won!",
+                    body=f"You have won the auction for {domain.domain_name} for ${winning_bid.bid_amount}!",
+                    data={"type": "domain_details", "id": domain.id}
+                )
+
+                # Notify Seller
+                send_push_notification_task.delay(
+                    user_id=auction.seller_id,
+                    title="Auction Sold",
+                    body=f"Your domain {domain.domain_name} sold for ${winning_bid.bid_amount}!",
+                    data={"type": "auction_history", "id": auction.id}
+                )
             except stripe.error.CardError as e:
                 raise HTTPException(
                     status_code=status.HTTP_402_PAYMENT_REQUIRED,

@@ -29,6 +29,7 @@ class DatabaseService:
             response.append({
                 "id": domain.id,
                 "domain_name": domain.domain_name,
+                "auto_renew_enabled": domain.auto_renew_enabled,
                 "price": domain.price,
                 "bought_date": domain.bought_date,
                 "expiry_date": domain.expiry_date,

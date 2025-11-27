@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Depends
 
+from models.db_models import User, Notification
 from services.namecheap_service import NamecheapService
+from services.notification_service import NotificationService
 from services.payment_service import PaymentService
 from services.auth_service import AuthService
 from services.database_service import DatabaseService
-
+from models.api_dto import DeviceTokenRequest
 from models.api_dto import DomainRegisterUserDetails, UserDomainResponse, UserTransactionResponse, SavePaymentRequest, \
     UserMyDetailsResponse
 from database.connection import get_db
@@ -16,7 +18,7 @@ namecheap = NamecheapService()
 database_service = DatabaseService()
 auth_service = AuthService()
 payment_service = PaymentService()
-
+notification_service = NotificationService()
 
 @router.get("/user-details")
 def get_user_details(username: str = Depends(auth_service.verify_token), db: Session = Depends(get_db)):
@@ -86,3 +88,23 @@ def remove_payment_method(
 ):
     """Removes the payment method for the authenticated user."""
     return payment_service.remove_payment_method(username, db)
+
+@router.post("/register-device")
+def register_device(
+    request: DeviceTokenRequest,
+    username: str = Depends(auth_service.verify_token),
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(User.username == username).first()
+    notification_service.register_device(user.id, request.token, db)
+    return {"message": "Device registered"}
+
+@router.get("/notifications")
+def get_notifications(
+    username: str = Depends(auth_service.verify_token),
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(User.username == username).first()
+    # Return last 50 notifications
+    notifs = db.query(Notification).filter(Notification.user_id == user.id).order_by(Notification.created_at.desc()).limit(50).all()
+    return notifs

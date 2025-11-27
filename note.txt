@@ -27,3 +27,8 @@ Sprint
 - xx
 
 next step is testing the auctions endpoint
+
+DOMAIN IS EXPIRING
+LISTING IS SOLD
+AUCTION IS SOLD
+BRAINSTROM THE REST OF THE NOTIFICATIONS

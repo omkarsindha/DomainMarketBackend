@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Numeric, Enum
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Numeric, Enum, Boolean
 from sqlalchemy.orm import relationship
 from database.connection import Base
 from datetime import datetime
@@ -45,6 +45,7 @@ class Domain(Base):
     price = Column(Numeric(10, 2), nullable=False)
     bought_date = Column(DateTime, nullable=False, default=datetime.utcnow)
     expiry_date = Column(DateTime, nullable=False)
+    auto_renew_enabled = Column(Boolean, default=False)
 
     # Relationships
     user = relationship("User", back_populates="domains")
@@ -149,3 +150,31 @@ class Transaction(Base):
     domain = relationship("Domain", backref="transactions")
     auction = relationship("Auction", backref="transactions")
     listing = relationship("Listing", backref="transactions")
+
+
+class UserDevice(Base):
+    __tablename__ = "user_devices"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    fcm_token = Column(String, nullable=False, unique=True)  # The token from React Native
+    last_active = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", backref="devices")
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    title = Column(String, nullable=False)
+    body = Column(String, nullable=False)
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Optional: Link to a specific event so clicking takes them deep into the app
+    related_auction_id = Column(Integer, nullable=True)
+    related_domain_id = Column(Integer, nullable=True)
+
+    user = relationship("User", backref="notifications")

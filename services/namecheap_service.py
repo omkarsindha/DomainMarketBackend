@@ -19,7 +19,7 @@ class NamecheapService:
         self.username = os.getenv("NAMEOFUSER")
         self.client_ip = os.getenv("CLIENT_IP")
         self.api_url = "https://api.sandbox.namecheap.com/xml.response"
-        self.tld_price_cache = {}  # Cache for TLD prices
+        self.tld_price_cache = {}
 
     def _build_api_url(self, command, **params):
         """Builds a Namecheap API request URL with common parameters."""
@@ -335,6 +335,69 @@ class NamecheapService:
         except Exception as e:
             return {"error": str(e)}
 
+    def renew_domain(self, domain_name: str, years: int, promotion_code: str = None, is_premium: bool = False,
+                     premium_price: float = 0.0):
+        """
+        Renews a domain via Namecheap API.
+        """
+        params = {
+            "DomainName": domain_name,
+            "Years": years,
+            "IsPremiumDomain": str(is_premium).lower()
+        }
+
+        if promotion_code:
+            params["PromotionCode"] = promotion_code
+
+        if is_premium and premium_price > 0:
+            params["PremiumPrice"] = premium_price
+
+        url = self._build_api_url("namecheap.domains.renew", **params)
+
+        try:
+            response = self._make_api_request(url)
+            root = ET.fromstring(response.text)
+            ns = {'ns': 'http://api.namecheap.com/xml.response'}
+
+            # Check for API errors
+            error = root.find(".//ns:Error", ns)
+            if error is not None:
+                return {"success": False, "error": error.text, "code": error.attrib.get("Number")}
+
+            # Check renew result
+            renew_result = root.find(".//ns:DomainRenewResult", ns)
+
+            if renew_result is not None and renew_result.attrib.get("Renew") == "true":
+                charged_amount = renew_result.attrib.get("ChargedAmount")
+                order_id = renew_result.attrib.get("OrderID")
+                transaction_id = renew_result.attrib.get("TransactionID")
+
+                # Extract new expiration date from response details
+                domain_details = renew_result.find("ns:DomainDetails", ns)
+                expired_date_str = domain_details.find("ns:ExpiredDate",
+                                                       ns).text if domain_details is not None else None
+
+                new_expiry_date = None
+                if expired_date_str:
+                    try:
+                        # Namecheap usually returns "MM/DD/YYYY HH:MM:SS AM/PM"
+                        new_expiry_date = datetime.strptime(expired_date_str, "%m/%d/%Y %I:%M:%S %p")
+                    except ValueError:
+                        pass
+
+                return {
+                    "success": True,
+                    "message": "Domain renewed successfully",
+                    "charged_amount": charged_amount,
+                    "order_id": order_id,
+                    "transaction_id": transaction_id,
+                    "new_expiry_date": new_expiry_date
+                }
+
+            return {"success": False, "error": "Domain renewal failed (API returned false)."}
+
+        except Exception as e:
+            return {"success": False, "error": f"Exception during renewal: {str(e)}"}
 
 if __name__ == "__main__":
     domain_checker = NamecheapService()

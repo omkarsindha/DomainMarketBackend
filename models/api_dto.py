@@ -51,7 +51,7 @@ class BidResponse(BaseModel):
     created_at: datetime
 
     class Config:
-        orm_mode = True
+        form_attributes = True
 
 class AuctionResponse(BaseModel):
     id: int
@@ -65,7 +65,7 @@ class AuctionResponse(BaseModel):
     winner_username: Optional[str] = None
 
     class Config:
-        orm_mode = True
+        form_attributes = True
 
 
 class ListingCreateRequest(BaseModel):
@@ -84,7 +84,7 @@ class ListingResponse(BaseModel):
     buyer_username: Optional[str] = None
 
     class Config:
-        orm_mode = True
+        form_attributes = True
 
 
 class SavePaymentRequest(BaseModel):
@@ -99,8 +99,9 @@ class UserDomainResponse(BaseModel):
     expiry_date: datetime
     is_auctioned: bool
     is_listed: bool
+    auto_renew_enabled: bool
 class Config:
-        orm_mode = True
+        form_attributes = True
 
 class UserTransactionResponse(BaseModel):
     id: int
@@ -114,7 +115,7 @@ class UserTransactionResponse(BaseModel):
     years_purchased: Optional[int] = None
 
     class Config:
-        orm_mode = True
+        form_attributes = True
 
 class UserMyDetailsResponse(BaseModel):
     username: str
@@ -197,3 +198,8 @@ class HostingSetupResponse(BaseModel):
     success: bool
     message: str
     dns_records_set: List[DNSRecordResponse]
+
+
+class DeviceTokenRequest(BaseModel):
+    token: str
+

@@ -51,7 +51,7 @@ class PaymentService:
         #  If payment is successful then I register the domain
         registration_result = self.namecheap.register_domain(domain, years, total_price, username, db)
         print(registration_result)
-
+        print("hiiiii")
         # If Registration unsuccessful
         if not registration_result.get("success"):
             self._issue_refund(payment_intent_id)
